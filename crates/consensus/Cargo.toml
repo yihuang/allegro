@@ -1,0 +1,31 @@
+[package]
+name = "allegro-consensus"
+description = "Commonware consensus integration for Allegro"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+allegro-primitives.workspace = true
+
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+bytes.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+commonware-utils.workspace = true
+
+eyre.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
