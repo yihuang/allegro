@@ -1,161 +1,523 @@
-//! Application actor — implements [`commonware_consensus::Automaton`].
+//! Application actor — implements [`commonware_consensus::Automaton`] and [`Relay`].
 //!
-//! This is the bridge between the consensus layer and the execution layer.
+//! Delegates block building and validation to a [`PayloadBuilder`] (executor).
+//! Follows Tempo's architecture: the application actor is the glue between
+//! consensus and execution layers.
+//!
+//! # Architecture
+//!
+//! The actor communicates with the simplex engine via a [`Mailbox`] that
+//! implements [`Automaton`]. Messages are sent over an mpsc channel from the
+//! engine to the actor, which processes them sequentially:
+//!
+//! 1. `Genesis` — returns the genesis block digest
+//! 2. `Propose` — builds a new block via the payload builder
+//! 3. `Verify` — validates a block from another proposer
+//! 4. `Broadcast` — engine asks to broadcast a block (handled by the relay)
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::SystemTime;
 
-use alloy_consensus::{BlockHeader, Sealable};
 use alloy_primitives::B256;
-use commonware_codec::{Encode, EncodeSize};
 use commonware_consensus::{
-    Automaton, Heightable,
-    types::{Epoch, Height, View},
+    Automaton, CertifiableAutomaton,
+    simplex::types::Context,
+    simplex::Plan,
+    types::{Epoch, Round, View},
 };
-use commonware_cryptography::{
-    Digestible,
-    ed25519::{PrivateKey, PublicKey},
-};
-use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
-use eyre::{OptionExt, WrapErr};
-use tracing::{debug, info, instrument, warn};
+use commonware_cryptography::{Signer as _, ed25519::PublicKey};
+use commonware_utils::channel::oneshot;
+use futures::{SinkExt, StreamExt, channel::mpsc};
+use tracing::{debug, error, info, warn};
 
-use allegro_primitives::{AllegroConsensusContext, AllegroHeader, Digest};
+use allegro_primitives::Digest as AllegroDigest;
 
-use crate::{
-    block::Block,
-    executor::{self, Command},
-    validators::ValidatorSet,
-};
+use crate::executor::{PayloadBuilder, ValidationResult};
+use crate::metrics::ConsensusMetrics;
+use crate::validators::ValidatorSet;
 
-/// Configuration for the application actor.
-pub(crate) struct Config {
-    pub(crate) public_key: PublicKey,
-    pub(crate) signing_key: PrivateKey,
-    pub(crate) mailbox_size: usize,
-    pub(crate) executor_mailbox: executor::Mailbox,
-    pub(crate) validators: ValidatorSet,
+// ── Block info tracking ────────────────────────────────────
+
+/// Info about a block tracked by digest.
+#[derive(Debug, Clone)]
+pub struct BlockInfo {
+    pub number: u64,
+    pub hash: B256,
+    pub view: u64,
+    pub proposer: PublicKey,
+    /// Block timestamp (seconds since epoch).
+    pub timestamp: u64,
 }
 
-/// The application actor implementing the `Automaton` trait.
-pub(crate) struct Application<TContext> {
-    context: TContext,
-    config: Config,
+// ── Shared block stores ─────────────────────────────────────
+
+/// Blocks we have proposed (shared with the relay for broadcasting).
+pub type PendingBlocks = Arc<Mutex<HashMap<AllegroDigest, Vec<u8>>>>;
+
+/// Blocks received from peers (shared between receiver task and actor for verification).
+pub type ReceivedBlocks = Arc<RwLock<HashMap<AllegroDigest, Vec<u8>>>>;
+
+/// Per-validator block info tracking (height, parent hash, etc.).
+pub type BlockInfoMap = Arc<RwLock<HashMap<AllegroDigest, BlockInfo>>>;
+
+/// Create shared block stores for the actor and relay.
+pub fn new_block_stores() -> (PendingBlocks, ReceivedBlocks, BlockInfoMap) {
+    (
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+    )
 }
 
-impl<TContext> Application<TContext>
-where
-    TContext: Clock + Metrics + Pacer + Spawner,
-{
-    pub(crate) fn new(context: TContext, config: Config) -> Self {
-        Self { context, config }
+// ── Messages ─────────────────────────────────────────────────
+
+/// Messages from the consensus engine to the application actor.
+pub enum Message {
+    Genesis(Genesis),
+    Propose(Box<Propose>),
+    Verify(Box<Verify>),
+    Broadcast(Broadcast),
+}
+
+pub struct Genesis {
+    pub epoch: Epoch,
+    pub response: oneshot::Sender<AllegroDigest>,
+}
+
+impl From<Genesis> for Message {
+    fn from(v: Genesis) -> Self {
+        Self::Genesis(v)
     }
 }
 
-/// The payload type returned by `propose` — a raw sealed block.
-pub(crate) struct AllegroProposal {
-    pub(crate) block: alloy_consensus::SealedBlock<allegro_primitives::Block>,
+pub struct Propose {
+    pub parent: (View, AllegroDigest),
+    pub response: oneshot::Sender<AllegroDigest>,
+    pub round: Round,
+    pub leader: PublicKey,
 }
 
-// ── Automaton implementation ──
-//
-// Commonware's Automaton trait defines the three consensus callbacks:
-//
-//   propose(epoch, view)  →  called when this node is the leader
-//   verify(proposal)      →  called when a proposal arrives
-//   commit(proposal)      →  called when a proposal and its ancestors finalize
+impl From<Propose> for Message {
+    fn from(v: Propose) -> Self {
+        Self::Propose(Box::new(v))
+    }
+}
 
-impl<TContext> Automaton for Application<TContext>
-where
-    TContext: Clock + Metrics + Pacer + Spawner + 'static,
-{
-    type Digest = Digest;
-    type Proposal = Block;
-    type Context = ();
+pub struct Verify {
+    pub parent: (View, AllegroDigest),
+    pub payload: AllegroDigest,
+    pub proposer: PublicKey,
+    pub response: oneshot::Sender<bool>,
+    pub round: Round,
+}
 
-    fn propose(
-        &mut self,
-        _context: &mut Self::Context,
-        epoch: Epoch,
-        view: View,
-    ) -> Result<Self::Proposal, <Self as Automaton>::Error> {
-        info!(%epoch, %view, "propose called — building block");
+impl From<Verify> for Message {
+    fn from(v: Verify) -> Self {
+        Self::Verify(Box::new(v))
+    }
+}
 
-        // In a full integration, this would:
-        // 1. Call reth's payload builder to construct a block
-        // 2. Attach consensus context (epoch, view, proposer)
-        // 3. Seal and return
-        //
-        // For the minimal demo, we signal intent and return a stub.
-        // The actual payload building happens via the reth engine API.
+pub struct Broadcast {
+    pub digest: AllegroDigest,
+    pub plan: Plan<PublicKey>,
+}
 
-        Err(<Self as Automaton>::Error::NotProposing)
+impl From<Broadcast> for Message {
+    fn from(v: Broadcast) -> Self {
+        Self::Broadcast(v)
+    }
+}
+
+// ── Mailbox ─────────────────────────────────────────────────
+
+/// Mailbox that implements [`Automaton`] and forwards requests to the actor.
+#[derive(Clone)]
+pub struct Mailbox {
+    sender: mpsc::Sender<Message>,
+}
+
+impl Mailbox {
+    pub fn new(sender: mpsc::Sender<Message>) -> Self {
+        Self { sender }
+    }
+}
+
+impl Automaton for Mailbox {
+    type Context = Context<AllegroDigest, PublicKey>;
+    type Digest = AllegroDigest;
+
+    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .sender
+            .send(Genesis { epoch, response: tx }.into())
+            .await
+            .is_err()
+        {
+            warn!("application actor dropped, returning empty digest for genesis");
+            return commonware_cryptography::Digest::EMPTY;
+        }
+        rx.await.unwrap_or(commonware_cryptography::Digest::EMPTY)
     }
 
-    fn verify(
+    async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .sender
+            .send(
+                Propose {
+                    parent: context.parent,
+                    response: tx,
+                    round: context.round,
+                    leader: context.leader,
+                }
+                .into(),
+            )
+            .await
+            .is_err()
+        {
+            warn!("application actor dropped in propose");
+        }
+        rx
+    }
+
+    async fn verify(
         &mut self,
-        _context: &mut Self::Context,
-        proposal: &Self::Proposal,
-    ) -> Result<(), <Self as Automaton>::Error> {
-        let header = proposal.inner().header();
-        let hash = proposal.inner().hash();
+        context: Self::Context,
+        payload: Self::Digest,
+    ) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .sender
+            .send(
+                Verify {
+                    parent: context.parent,
+                    payload,
+                    proposer: context.leader,
+                    response: tx,
+                    round: context.round,
+                }
+                .into(),
+            )
+            .await
+            .is_err()
+        {
+            warn!("application actor dropped in verify");
+        }
+        rx
+    }
+}
 
-        debug!(
-            number = header.number(),
-            hash = %hash,
-            "verify called — validating block",
-        );
+impl CertifiableAutomaton for Mailbox {}
 
-        // Validate the consensus context
-        let ctx = header
-            .consensus_context
-            .as_ref()
-            .ok_or(<Self as Automaton>::Error::InvalidProposal(
-                "block missing consensus context".into(),
-            ))?;
+// ── Actor ───────────────────────────────────────────────────
 
-        // Verify the proposer is a known validator
-        if self.config.validators.lookup(&ctx.proposer).is_none() {
-            warn!(
-                proposer = %ctx.proposer,
-                "proposer is not in the active validator set"
-            );
-            return Err(<Self as Automaton>::Error::InvalidProposal(
-                "unknown proposer".into(),
-            ));
+/// The application actor processes consensus events and manages block production.
+///
+/// This is the core glue between the consensus engine and the execution layer.
+/// It receives messages from the engine via its mailbox and delegates to the
+/// [`PayloadBuilder`] for actual block construction and validation.
+pub struct Actor {
+    receiver: mpsc::Receiver<Message>,
+    validators: ValidatorSet,
+    proposal_count: u64,
+    /// All proposed digests, for test verification.
+    pub proposals: Arc<Mutex<Vec<AllegroDigest>>>,
+    /// Blocks we proposed (relay reads from here to broadcast).
+    pending_blocks: PendingBlocks,
+    /// Blocks received from peers.
+    received_blocks: ReceivedBlocks,
+    /// Block info indexed by digest.
+    block_info: BlockInfoMap,
+    /// Payload builder (delegates to stub or reth engine API).
+    payload_builder: Arc<dyn PayloadBuilder>,
+    /// Consensus metrics.
+    metrics: Option<ConsensusMetrics>,
+}
+
+impl Actor {
+    /// Create a new application actor.
+    ///
+    /// Returns the actor and its mailbox. The caller must call [`run()`](Self::run)
+    /// to process messages.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        validators: ValidatorSet,
+        mailbox_size: usize,
+        proposals: Option<Arc<Mutex<Vec<AllegroDigest>>>>,
+        pending_blocks: PendingBlocks,
+        received_blocks: ReceivedBlocks,
+        block_info: BlockInfoMap,
+        payload_builder: Arc<dyn PayloadBuilder>,
+        metrics: Option<ConsensusMetrics>,
+        genesis_hash: B256,
+        genesis_timestamp: u64,
+    ) -> (Self, Mailbox) {
+        // Register genesis block info
+        let genesis_digest = commonware_cryptography::Digest::EMPTY;
+        let genesis_sk = commonware_cryptography::ed25519::PrivateKey::from_seed(0);
+        match block_info.write() {
+            Ok(mut guard) => {
+                guard.insert(
+                    genesis_digest,
+                    BlockInfo {
+                        number: 0,
+                        hash: genesis_hash,
+                        view: 0,
+                        proposer: genesis_sk.public_key(),
+                        timestamp: genesis_timestamp,
+                    },
+                );
+            }
+            Err(e) => {
+                error!(error = %e, "block_info write lock poisoned during actor init");
+            }
         }
 
-        // In a full integration, this would execute the block and verify
-        // the state root matches.
-
-        Ok(())
+        let (sender, receiver) = mpsc::channel(mailbox_size);
+        let mailbox = Mailbox::new(sender);
+        let actor = Self {
+            receiver,
+            validators,
+            proposal_count: 0,
+            proposals: proposals.unwrap_or_else(|| Arc::new(Mutex::new(Vec::new()))),
+            pending_blocks,
+            received_blocks,
+            block_info,
+            payload_builder,
+            metrics,
+        };
+        (actor, mailbox)
     }
 
-    fn commit(
-        &mut self,
-        _context: &mut Self::Context,
-        proposal: &Self::Proposal,
-    ) -> Result<(), <Self as Automaton>::Error> {
-        let header = proposal.inner().header();
-        let hash = proposal.inner().hash();
-        let height = header.number();
+    /// Run the actor's event loop, processing messages from the engine.
+    pub async fn run(&mut self) {
+        info!("application actor started");
+        while let Some(msg) = self.receiver.next().await {
+            match msg {
+                Message::Genesis(g) => self.handle_genesis(g).await,
+                Message::Propose(p) => self.handle_propose(*p).await,
+                Message::Verify(v) => self.handle_verify(*v).await,
+                Message::Broadcast(b) => self.handle_broadcast(b).await,
+            }
+        }
+        warn!("application actor stopped");
+    }
+
+    async fn handle_genesis(&mut self, msg: Genesis) {
+        info!(epoch = %msg.epoch.get(), "genesis");
+        let digest = commonware_cryptography::Digest::EMPTY;
+        // Genesis block info was already registered in `new()`. Just respond.
+        let _ = msg.response.send(digest);
+    }
+
+    async fn handle_propose(&mut self, msg: Propose) {
+        self.proposal_count += 1;
+        let parent_digest = msg.parent.1;
+        let parent_view = msg.parent.0;
 
         info!(
-            %height,
-            hash = %hash,
-            "commit called — block finalized",
+            round = %msg.round,
+            leader = %msg.leader,
+            parent_view = %parent_view.get(),
+            parent_digest = %parent_digest,
+            count = self.proposal_count,
+            "handle_propose"
         );
 
-        // Forward to executor for forkchoice update
-        self.config
-            .executor_mailbox
-            .send(Command::Finalized {
-                height: Height::new(height),
-                block: proposal.clone(),
-            })
-            .map_err(|e| {
-                <Self as Automaton>::Error::Internal(e.to_string())
-            })?;
+        if let Some(ref m) = self.metrics {
+            m.inc_blocks_proposed();
+        }
 
-        Ok(())
+        // Look up parent block info from our tracking
+        let (parent_number, parent_hash, parent_timestamp) = match self.block_info.read() {
+            Ok(guard) => guard
+                .get(&parent_digest)
+                .map(|info| (info.number, info.hash, info.timestamp))
+                .unwrap_or((0, B256::ZERO, 0)),
+            Err(e) => {
+                error!(error = %e, "block_info read lock poisoned");
+                let _ = msg.response.send(commonware_cryptography::Digest::EMPTY);
+                return;
+            }
+        };
+
+        let proposer_bytes = {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(msg.leader.as_ref());
+            bytes
+        };
+
+        // Timestamp must be strictly greater than parent (reth Engine API requirement).
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let timestamp = std::cmp::max(now, parent_timestamp + 1);
+
+        // Delegate block building to the payload builder
+        let built = self
+            .payload_builder
+            .build_payload(
+                parent_hash,
+                parent_number,
+                parent_view.get(),
+                parent_digest,
+                msg.round.epoch().get(),
+                msg.round.view().get(),
+                proposer_bytes,
+                timestamp,
+            )
+            .await;
+
+        let (block_bytes, block_hash, block_number) = match built {
+            Ok(payload) => (payload.block_bytes, payload.block_hash, payload.block_number),
+            Err(e) => {
+                error!(error = %e, "payload builder failed");
+                if let Some(ref m) = self.metrics {
+                    m.inc_errors();
+                }
+                let _ = msg.response.send(commonware_cryptography::Digest::EMPTY);
+                return;
+            }
+        };
+
+        let digest = AllegroDigest(block_hash);
+
+        // Track block info (including timestamp for parent lookups)
+        match self.block_info.write() {
+            Ok(mut guard) => {
+                guard.insert(
+                    digest,
+                    BlockInfo {
+                        number: block_number,
+                        hash: block_hash,
+                        view: msg.round.view().get(),
+                        proposer: msg.leader.clone(),
+                        timestamp,
+                    },
+                );
+            }
+            Err(e) => {
+                error!(error = %e, "block_info write lock poisoned in propose");
+            }
+        }
+
+        // Store in pending_blocks so the relay can broadcast it
+        match self.pending_blocks.lock() {
+            Ok(mut guard) => {
+                guard.insert(digest, block_bytes);
+            }
+            Err(e) => {
+                error!(error = %e, "pending_blocks lock poisoned");
+            }
+        }
+
+        match self.proposals.lock() {
+            Ok(mut guard) => guard.push(digest),
+            Err(e) => error!(error = %e, "proposals lock poisoned"),
+        }
+
+        info!(%digest, number = block_number, "proposed block");
+        let _ = msg.response.send(digest);
+    }
+
+    async fn handle_verify(&mut self, msg: Verify) {
+        let proposer_valid = self.validators.lookup(&msg.proposer).is_some();
+        if !proposer_valid {
+            warn!(proposer = %msg.proposer, "unknown proposer");
+            if let Some(ref m) = self.metrics {
+                m.inc_failed_validations();
+            }
+            let _ = msg.response.send(false);
+            return;
+        }
+
+        // Look up block bytes (ours or received from peer)
+        let block_bytes = match self.pending_blocks.lock() {
+            Ok(guard) => guard.get(&msg.payload).cloned(),
+            Err(e) => {
+                error!(error = %e, "pending_blocks lock poisoned during verify");
+                let _ = msg.response.send(false);
+                return;
+            }
+        }
+        .or_else(|| match self.received_blocks.read() {
+            Ok(guard) => guard.get(&msg.payload).cloned(),
+            Err(e) => {
+                error!(error = %e, "received_blocks lock poisoned during verify");
+                None
+            }
+        });
+
+        let Some(block_bytes) = block_bytes else {
+            warn!(payload = %msg.payload, "block not found for verification");
+            if let Some(ref m) = self.metrics {
+                m.inc_failed_validations();
+            }
+            let _ = msg.response.send(false);
+            return;
+        };
+
+        // Delegate validation to the payload builder
+        let expected_parent_hash = msg.parent.1 .0;
+        debug!(
+            payload = %msg.payload,
+            round = %msg.round,
+            "verifying block"
+        );
+
+        match self
+            .payload_builder
+            .validate_block(block_bytes, expected_parent_hash)
+            .await
+        {
+            Ok(ValidationResult::Valid(meta)) => {
+                debug!(payload = %msg.payload, "verify succeeded");
+                // Record block info for future parent lookups (critical for reth mode)
+                match self.block_info.write() {
+                    Ok(mut guard) => {
+                        guard.insert(
+                            msg.payload,
+                            BlockInfo {
+                                number: meta.number,
+                                hash: meta.hash,
+                                view: msg.round.view().get(),
+                                proposer: msg.proposer.clone(),
+                                timestamp: meta.timestamp,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        error!(error = %e, "block_info lock poisoned during verify record");
+                    }
+                }
+                if let Some(ref m) = self.metrics {
+                    m.inc_blocks_verified();
+                }
+                let _ = msg.response.send(true);
+            }
+            Ok(ValidationResult::Invalid(reason)) => {
+                warn!(payload = %msg.payload, reason = %reason, "verify failed");
+                if let Some(ref m) = self.metrics {
+                    m.inc_failed_validations();
+                }
+                let _ = msg.response.send(false);
+            }
+            Err(e) => {
+                error!(payload = %msg.payload, error = %e, "verify error");
+                if let Some(ref m) = self.metrics {
+                    m.inc_errors();
+                    m.inc_failed_validations();
+                }
+                let _ = msg.response.send(false);
+            }
+        }
+    }
+
+    async fn handle_broadcast(&mut self, msg: Broadcast) {
+        debug!(digest = %msg.digest, "broadcast request from engine");
     }
 }

@@ -1,9 +1,8 @@
 [package]
 name = "allegro-primitives"
-description = "Allegro primitive types: header with consensus context, digest, block aliases"
 
 version.workspace = true
-edition.workspace = true
+edition = "2021"
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true

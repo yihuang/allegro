@@ -1,18 +1,13 @@
-//! Allegro node types — WORK IN PROGRESS.
+//! Allegro-Reth node integration.
 //!
-//! This crate provides the Reth node integration for Allegro.
-//! The full implementation requires:
+//! This crate provides the production payload builder, chainspec helpers, and
+//! finalization forwarding needed to embed a reth execution node inside
+//! Allegro's commonware consensus engine.
 //!
-//! - `AllegroNode` implementing `NodeTypes` + `Node`
-//! - `AllegroConsensus` implementing `HeaderValidator` + `Consensus` + `FullConsensus`
-//! - `AllegroConsensusBuilder` implementing `ConsensusBuilder`
-//! - `AllegroEngineValidator` implementing `PayloadValidator`
-//! - `AllegroAddOns` for RPC modules
-//!
-//! See the `allegro-primitives` and `allegro-consensus` crates for the
-//! foundational types and commonware integration.
+//! See [`docs/reth-integration-plan.md`] for the full architecture and
+//! implementation status.
 
-#![allow(dead_code)]
-
-/// Placeholder for the Allegro node type.
-pub struct AllegroNode;
+pub mod builder;
+pub mod chainspec;
+pub mod finalizer;
+pub mod launch;

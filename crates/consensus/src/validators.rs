@@ -1,6 +1,4 @@
 //! Minimal validator management for Allegro.
-//!
-//! Stores a set of Ed25519 public keys mapped to their P2P addresses.
 
 use std::{
     collections::HashMap,
@@ -29,9 +27,7 @@ pub struct ValidatorSet {
 
 impl ValidatorSet {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { inner: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     pub fn from_entries(entries: &[ValidatorEntry]) -> Self {
@@ -41,24 +37,22 @@ impl ValidatorSet {
                 ingress: Ingress::Socket(entry.ingress),
                 egress: SocketAddr::from((entry.egress, 0)),
             };
-            info!(
-                public_key = %entry.public_key,
-                ingress = %entry.ingress,
-                egress = %entry.egress,
-                "adding validator",
-            );
+            info!(public_key = %entry.public_key, "adding validator");
             map.insert(entry.public_key.clone(), addr);
         }
-        Self {
-            inner: Arc::new(RwLock::new(map)),
-        }
+        Self { inner: Arc::new(RwLock::new(map)) }
     }
 
+    /// Return all validator public keys.
+    pub fn keys(&self) -> Vec<PublicKey> {
+        self.inner.read().keys().cloned().collect()
+    }
+
+    /// Look up a validator's address by public key.
     pub fn lookup(&self, key: &PublicKey) -> Option<Address> {
         self.inner.read().get(key).cloned()
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.inner.read().len()
     }
@@ -69,7 +63,5 @@ impl ValidatorSet {
 }
 
 impl Default for ValidatorSet {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }

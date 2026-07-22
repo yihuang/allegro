@@ -1,9 +1,8 @@
 [package]
 name = "allegro"
-description = "Allegro — minimal Reth + Commonware consensus node"
 
 version.workspace = true
-edition.workspace = true
+edition = "2021"
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -14,11 +13,23 @@ workspace = true
 
 [dependencies]
 allegro-consensus.workspace = true
+allegro-node.workspace = true
+allegro-reth.workspace = true
 
 clap = { workspace = true, features = ["derive"] }
+alloy-primitives.workspace = true
 eyre.workspace = true
-hex.workspace = true
+futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-utils.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+
+reth-cli-runner.workspace = true
+reth-engine-primitives.workspace = true
+reth-ethereum-engine-primitives.workspace = true
+reth-payload-builder.workspace = true
+tokio.workspace = true
