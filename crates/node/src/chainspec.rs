@@ -1,16 +1,28 @@
 //! Chainspec helpers for the Allegro devnet.
 
+use std::path::Path;
 use std::sync::Arc;
 
+use alloy_genesis::Genesis;
 use reth_chainspec::ChainSpec;
 
 /// Return the DEV chainspec, which activates all hardforks through Osaka at genesis
 /// and includes 20 prefunded accounts derived from the "test test test ... junk" mnemonic.
 ///
-/// This is the simplest chainspec for local devnet usage. Each node shares the same
-/// spec — the genesis hash is identical across the network.
+/// This is the default chainspec used when no `--genesis` path is provided.
 pub fn dev_chainspec() -> Arc<ChainSpec> {
     reth_chainspec::DEV.clone()
+}
+
+/// Load a `ChainSpec` from a genesis JSON file (alloy Genesis format).
+///
+/// The JSON should match the format produced by `allegro-xtask genesis`.
+pub fn chain_spec_from_genesis_json(path: &Path) -> eyre::Result<Arc<ChainSpec>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| eyre::eyre!("read genesis file {}: {e}", path.display()))?;
+    let genesis: Genesis = serde_json::from_str(&content)
+        .map_err(|e| eyre::eyre!("parse genesis JSON {}: {e}", path.display()))?;
+    Ok(Arc::new(ChainSpec::from_genesis(genesis)))
 }
 
 #[cfg(test)]

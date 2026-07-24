@@ -95,6 +95,8 @@ pub struct Cli {
     pub authrpc_port: u16,
     #[arg(long = "reth-p2p-port", default_value = "30303", env = "ALLEGRO_RETH_P2P_PORT")]
     pub reth_p2p_port: u16,
+    #[arg(long = "genesis", env = "ALLEGRO_GENESIS")]
+    pub genesis: Option<PathBuf>,
 }
 
 // ── Entry point ────────────────────────────────────────────
@@ -412,12 +414,18 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join(format!("allegro-reth-{}", cli.node)));
 
+        let chain = match &cli.genesis {
+            Some(path) => allegro_node::chainspec::chain_spec_from_genesis_json(path)
+                .expect("failed to load genesis"),
+            None => allegro_node::chainspec::dev_chainspec(),
+        };
+
         let cfg = allegro_node::launch::RethNodeConfig {
             datadir,
             http_port: cli.rpc_port,
             authrpc_port: cli.authrpc_port,
             p2p_port: cli.reth_p2p_port,
-            chain: allegro_node::chainspec::dev_chainspec(),
+            chain,
         };
 
         let launched = allegro_node::launch::launch(cfg, task_executor)

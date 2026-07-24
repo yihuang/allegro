@@ -1,17 +1,37 @@
-//! allegro-xtask — genesis and devnet utilities.
+//! allegro-xtask — genesis config generator for devnets.
+//!
+//! Generates a `genesis.json` consumable by the allegro binary (`--genesis` flag),
+//! along with per-validator key material and a validators manifest.
+//!
+//! Funded accounts are derived from the standard Anvil mnemonic:
+//!   "test test test test test test test test test test test junk"
+//! at BIP-44 Ethereum derivation path m/44'/60'/0'/0/{i}.  This matches what
+//! `cast send` and forge scripts expect out of the box.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use alloy_genesis::{ChainConfig, Genesis, GenesisAccount};
+use alloy_primitives::{Address, B256, U256};
+use alloy_signer_local::MnemonicBuilder;
 use clap::Parser;
-use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-use eyre::WrapErr as _;
+use commonware_cryptography::Signer as _;
+use commonware_cryptography::ed25519::PrivateKey;
+use eyre::WrapErr;
 use serde::{Deserialize, Serialize};
 
+/// The standard Anvil mnemonic used across the Ethereum tooling ecosystem.
+const ANVIL_MNEMONIC: &str =
+    "test test test test test test test test test test test junk";
+
+/// Number of prefunded accounts to create (20 = same as anvil / DEV spec).
+const PREFUND_COUNT: u32 = 20;
+
+/// CLI definition.
 #[derive(Debug, Parser)]
 #[command(name = "allegro-xtask")]
 enum Cli {
-    /// Generate genesis config + validator keys for a devnet.
+    /// Generate devnet genesis and validator configs.
     Genesis(GenesisCmd),
 }
 
@@ -20,14 +40,25 @@ struct GenesisCmd {
     /// Number of validators.
     #[arg(long, default_value = "4")]
     validators: u16,
-
-    /// Starting P2P port (each validator gets port+index).
+    /// Base port for p2p (each validator gets port+index).
     #[arg(long, default_value = "13000")]
     base_port: u16,
-
+    /// Chain ID for the genesis config.
+    #[arg(long, default_value = "1337")]
+    chain_id: u64,
     /// Output directory.
     #[arg(short, long, default_value = "./devnet")]
     output: PathBuf,
+}
+
+// ── Output types ───────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+struct ValidatorOutput {
+    index: u16,
+    public_key: String,
+    ingress: String,
+    egress: String,
 }
 
 fn main() -> eyre::Result<()> {
@@ -42,34 +73,86 @@ impl GenesisCmd {
         std::fs::create_dir_all(output)
             .wrap_err_with(|| format!("failed to create {}", output.display()))?;
 
-        // Generate N validator entries
+        // ── Generate validators ──
         let mut validators = Vec::new();
         for i in 0..self.validators {
-            let seed = i as u64;
-            let sk = PrivateKey::from_seed(seed);
+            let sk = PrivateKey::from_seed(i as u64);
             let pk = sk.public_key();
-
-            let ingress = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), self.base_port + i);
-
+            let port = self.base_port + i;
             validators.push(ValidatorOutput {
                 index: i,
                 public_key: hex::encode(pk.as_ref()),
-                private_key_seed: seed,
-                ingress: ingress.to_string(),
-                egress: Ipv4Addr::LOCALHOST.to_string(),
+                ingress: format!("127.0.0.1:{port}"),
+                egress: format!("127.0.0.1:{port}"),
             });
         }
 
-        // Write validators.json
-        let val_path = output.join("validators.json");
-        let val_json = serde_json::to_string_pretty(&validators)
-            .wrap_err("serialize validators")?;
-        std::fs::write(&val_path, &val_json)
-            .wrap_err_with(|| format!("write {}", val_path.display()))?;
-        println!("wrote {} validators to {}", validators.len(), val_path.display());
+        // ── Generate funded accounts via HD derivation ──
+        let mut alloc = BTreeMap::new();
+        for i in 0..PREFUND_COUNT {
+            let signer = MnemonicBuilder::try_from_phrase_nth(ANVIL_MNEMONIC, i)
+                .wrap_err_with(|| format!("derive account {i} from mnemonic"))?;
 
-        // Write genesis.json (minimal Ethereum dev genesis)
-        let genesis = GenesisConfig::dev(validators.iter().map(|v| &v.public_key));
+            let addr: Address = signer.address();
+            let secret: B256 = signer.to_bytes();
+
+            alloc.insert(
+                addr,
+                GenesisAccount {
+                    balance: U256::from(10_000_000_000_000_000_000_000u128), // 10_000 ETH
+                    private_key: Some(secret),
+                    ..Default::default()
+                },
+            );
+        }
+
+        // ── Build ChainConfig (all forks at genesis, like DEV spec) ──
+        let config = ChainConfig {
+            chain_id: self.chain_id,
+            // All block-number-based forks at 0
+            homestead_block: Some(0),
+            eip150_block: Some(0),
+            eip155_block: Some(0),
+            eip158_block: Some(0),
+            byzantium_block: Some(0),
+            constantinople_block: Some(0),
+            petersburg_block: Some(0),
+            istanbul_block: Some(0),
+            muir_glacier_block: Some(0),
+            berlin_block: Some(0),
+            london_block: Some(0),
+            arrow_glacier_block: Some(0),
+            gray_glacier_block: Some(0),
+            // Merge at genesis
+            terminal_total_difficulty: Some(U256::ZERO),
+            merge_netsplit_block: None,
+            // Fork-timestamp-based forks at 0 (Shanghai through Osaka)
+            shanghai_time: Some(0),
+            cancun_time: Some(0),
+            prague_time: Some(0),
+            osaka_time: Some(0),
+            amsterdam_time: None,
+            ..Default::default()
+        };
+
+        let genesis = Genesis {
+            config,
+            nonce: 0x42,
+            timestamp: 0,
+            extra_data: Default::default(),
+            gas_limit: 30_000_000,
+            difficulty: U256::ZERO,
+            mix_hash: B256::ZERO,
+            coinbase: Address::ZERO,
+            alloc,
+            base_fee_per_gas: None,
+            excess_blob_gas: None,
+            blob_gas_used: None,
+            number: None,
+            parent_hash: None,
+        };
+
+        // ── Write output files ──
         let genesis_path = output.join("genesis.json");
         let genesis_json = serde_json::to_string_pretty(&genesis)
             .wrap_err("serialize genesis")?;
@@ -77,72 +160,43 @@ impl GenesisCmd {
             .wrap_err_with(|| format!("write {}", genesis_path.display()))?;
         println!("wrote genesis to {}", genesis_path.display());
 
-        // Write node configs
+        let val_path = output.join("validators.json");
+        let val_json = serde_json::to_string_pretty(&validators)
+            .wrap_err("serialize validators")?;
+        std::fs::write(&val_path, &val_json)
+            .wrap_err_with(|| format!("write {}", val_path.display()))?;
+        println!("wrote {} validators to {}", validators.len(), val_path.display());
+
+        // Per-node key files
         for v in &validators {
             let node_dir = output.join(format!("node-{}", v.index));
             std::fs::create_dir_all(&node_dir)
                 .wrap_err_with(|| format!("create {}", node_dir.display()))?;
-
-            // Write separate signing key file
-            let key_path = node_dir.join("signing_key.hex");
-            std::fs::write(&key_path, format!("0x{:064x}", v.private_key_seed))
+            let key_path = node_dir.join("key");
+            let seed_hex = format!("0x{:016x}", v.index as u64);
+            std::fs::write(&key_path, &seed_hex)
                 .wrap_err_with(|| format!("write {}", key_path.display()))?;
         }
 
-        println!("\nTo start a node:\n  allegro --node 0 --listen 127.0.0.1:13000");
-        println!("  allegro --node 1 --listen 127.0.0.1:13001 --peer 127.0.0.1:13000");
+        println!();
+        println!("To start a node:");
+        for v in &validators {
+            let peer_args: String = validators
+                .iter()
+                .filter(|o| o.index != v.index)
+                .map(|o| format!("--peer {}", o.ingress))
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!(
+                "  allegro --node {} --listen {} {} --genesis {}",
+                v.index,
+                v.ingress,
+                peer_args,
+                genesis_path.display(),
+            );
+        }
 
         Ok(())
-    }
-}
-
-// ── Output types ─────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ValidatorOutput {
-    index: u16,
-    public_key: String,
-    private_key_seed: u64,
-    ingress: String,
-    egress: String,
-}
-
-#[derive(Debug, Serialize)]
-struct GenesisConfig(serde_json::Value);
-
-impl GenesisConfig {
-    /// Minimal Ethereum dev genesis.
-    fn dev<'a>(_validators: impl Iterator<Item = &'a String>) -> Self {
-        // Standard Reth dev genesis
-        let json = serde_json::json!({
-            "config": {
-                "chainId": 1337,
-                "homesteadBlock": 0,
-                "eip150Block": 0,
-                "eip155Block": 0,
-                "eip158Block": 0,
-                "byzantiumBlock": 0,
-                "constantinopleBlock": 0,
-                "petersburgBlock": 0,
-                "istanbulBlock": 0,
-                "berlinBlock": 0,
-                "londonBlock": 0,
-                "mergeNetsplitBlock": 0,
-                "shanghaiTime": 0,
-                "cancunTime": 0,
-                "terminalTotalDifficulty": 0,
-                "terminalTotalDifficultyPassed": true
-            },
-            "nonce": "0x0",
-            "timestamp": "0x0",
-            "extraData": "0x",
-            "gasLimit": "0x1c9c380",
-            "difficulty": "0x0",
-            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-            "coinbase": "0x0000000000000000000000000000000000000000",
-            "alloc": {}
-        });
-        Self(json)
     }
 }
 
@@ -157,18 +211,29 @@ mod tests {
             validators: 2,
             base_port: 13000,
             output: dir.path().to_path_buf(),
+            chain_id: 1337,
         };
         cmd.run().unwrap();
+        let content = std::fs::read_to_string(dir.path().join("genesis.json")).unwrap();
+        let genesis: Genesis = serde_json::from_str(&content).unwrap();
+        assert_eq!(genesis.config.chain_id, 1337);
+        assert!(genesis.config.shanghai_time == Some(0));
+        assert_eq!(genesis.alloc.len(), PREFUND_COUNT as usize);
+    }
 
-        let val_path = dir.path().join("validators.json");
-        let content = std::fs::read_to_string(&val_path).unwrap();
-        let vals: Vec<ValidatorOutput> = serde_json::from_str(&content).unwrap();
-        assert_eq!(vals.len(), 2);
-        assert_eq!(vals[0].index, 0);
-        assert_eq!(vals[1].index, 1);
-        assert_ne!(vals[0].public_key, vals[1].public_key);
-
-        let genesis_path = dir.path().join("genesis.json");
-        assert!(genesis_path.exists());
+    #[test]
+    fn derived_keys_match_anvil_defaults() {
+        // Account #0 from the anvil mnemonic should have the well-known key.
+        let signer = MnemonicBuilder::from_phrase_nth(ANVIL_MNEMONIC, 0);
+        assert_eq!(
+            signer.to_bytes(),
+            B256::from_slice(&hex::decode(
+                "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            ).unwrap())
+        );
+        assert_eq!(
+            signer.address(),
+            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".parse::<Address>().unwrap()
+        );
     }
 }
