@@ -35,8 +35,10 @@ XTASK=target/debug/allegro-xtask
 # ── 2. genesis ──────────────────────────────────────────────
 echo "=== generating genesis ($N validators) ==="
 mkdir -p "$DATA_DIR"
-"$XTASK" genesis --validators "$N" --base-port "$BASE_PORT" --output "$DATA_DIR"
-echo ""
+if [ "$EXECUTION" = "reth" ]; then
+    "$XTASK" genesis --validators "$N" --base-port "$BASE_PORT" --chain-id 1337 --output "$DATA_DIR"
+    echo ""
+fi
 
 # ── 3. start nodes ──────────────────────────────────────────
 pids=()
@@ -56,7 +58,8 @@ for i in $(seq 0 $((N - 1))); do
             --datadir $DATA_DIR/node-$i \
             --rpc-port $((RPC_BASE + i)) \
             --authrpc-port $((AUTHRPC_BASE + i)) \
-            --reth-p2p-port $((RETH_P2P_BASE + i))"
+            --reth-p2p-port $((RETH_P2P_BASE + i)) \
+            --genesis $DATA_DIR/genesis.json"
     fi
 
     # start node with line-buffered stderr
@@ -75,7 +78,7 @@ for i in $(seq 0 $((N - 1))); do
     fi
 done
 
-# ── 4. wait for startup ─────────────────────────────────────
+# ── 5. wait for startup ─────────────────────────────────────
 echo ""
 echo "=== waiting for all nodes to start ==="
 for i in $(seq 1 30); do
@@ -92,7 +95,7 @@ if ! kill -0 "${pids[0]}" 2>/dev/null; then
     exit 1
 fi
 
-# ── 5. check block production ───────────────────────────────
+# ── 6. check block production ───────────────────────────────
 echo "=== checking block production (initial wait 15s) ==="
 sleep 15
 
@@ -133,7 +136,7 @@ echo " Devnet running: $N nodes"
 echo " Logs: $DATA_DIR"
 echo "============================================"
 
-# ── 6. optional: send a test tx (reth mode, needs cast) ─────
+# ── 7. optional: send a test tx (reth mode, needs cast) ─────
 if [ "$EXECUTION" = "reth" ] && command -v cast &>/dev/null; then
     echo ""
     echo "=== sending test tx via cast ==="
