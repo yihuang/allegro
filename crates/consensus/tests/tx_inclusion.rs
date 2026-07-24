@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use allegro_consensus::{
     config::ConsensusConfig,
+    create_reth_payload_builder,
     executor::{BuildPayloadRequest, ValidateBlockRequest},
-    start_simplex_engine, BlockMeta, BuiltPayload, EngineConfig,
-    ValidationResult, ValidatorEntry, ValidatorSet, create_reth_payload_builder,
+    start_simplex_engine, BlockMeta, BuiltPayload, EngineConfig, ValidationResult, ValidatorEntry,
+    ValidatorSet,
 };
 use alloy_consensus::{BlockBody, Sealable, Signed, TxEnvelope, TxLegacy};
 use alloy_primitives::{b256, keccak256, Address, Bytes, Signature, B256, U256};

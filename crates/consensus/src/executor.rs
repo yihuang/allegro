@@ -154,8 +154,7 @@ type BuildPayloadFn = Arc<
 type ValidateBlockFn = Arc<
     dyn Fn(
             ValidateBlockRequest,
-        )
-            -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -203,10 +202,7 @@ pub struct EngineApiPayloadBuilder {
 
 impl EngineApiPayloadBuilder {
     /// Create a new engine API payload builder with the given async closures.
-    pub fn new(
-        build_fn: BuildPayloadFn,
-        validate_fn: ValidateBlockFn,
-    ) -> Self {
+    pub fn new(build_fn: BuildPayloadFn, validate_fn: ValidateBlockFn) -> Self {
         Self {
             build_fn,
             validate_fn,
@@ -352,16 +348,14 @@ pub fn create_reth_payload_builder<BuildFn, ValidateFn>(
 where
     BuildFn: Fn(
             BuildPayloadRequest,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>,
-        > + Send
+        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
+        + Send
         + Sync
         + 'static,
     ValidateFn: Fn(
             ValidateBlockRequest,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<ValidationResult, String>> + Send>,
-        > + Send
+        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
+        + Send
         + Sync
         + 'static,
 {
@@ -413,6 +407,9 @@ mod executor_tests {
         assert!(attrs.target_gas_limit.is_none());
         assert_eq!(attrs.timestamp, 1_000_000);
         assert_eq!(attrs.prev_randao, B256::ZERO);
-        assert_eq!(attrs.suggested_fee_recipient, alloy_primitives::Address::ZERO);
+        assert_eq!(
+            attrs.suggested_fee_recipient,
+            alloy_primitives::Address::ZERO
+        );
     }
 }

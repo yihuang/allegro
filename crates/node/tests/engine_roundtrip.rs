@@ -73,18 +73,16 @@ async fn build_validate_finalize_first_block() {
     let timestamp = now_secs().max(launched.genesis_timestamp + 1);
     let built = tokio::time::timeout(
         Duration::from_secs(30),
-        builder.build_payload(
-            &BuildPayloadRequest {
-                parent_hash: launched.genesis_hash,
-                parent_number: 0,
-                parent_view: 0,
-                parent_digest: AllegroDigest::EMPTY,
-                epoch: 0,
-                view: 1,
-                proposer: [0u8; 32],
-                timestamp,
-            },
-        ),
+        builder.build_payload(&BuildPayloadRequest {
+            parent_hash: launched.genesis_hash,
+            parent_number: 0,
+            parent_view: 0,
+            parent_digest: AllegroDigest::EMPTY,
+            epoch: 0,
+            view: 1,
+            proposer: [0u8; 32],
+            timestamp,
+        }),
     )
     .await
     .expect("build_payload timed out")
@@ -138,18 +136,16 @@ async fn build_validate_finalize_first_block() {
     let timestamp2 = now_secs().max(timestamp + 1);
     let built2 = tokio::time::timeout(
         Duration::from_secs(30),
-        builder.build_payload(
-            &BuildPayloadRequest {
-                parent_hash: built.block_hash,
-                parent_number: 1,
-                parent_view: 1,
-                parent_digest: AllegroDigest(built.block_hash),
-                epoch: 0,
-                view: 2,
-                proposer: [0u8; 32],
-                timestamp: timestamp2,
-            },
-        ),
+        builder.build_payload(&BuildPayloadRequest {
+            parent_hash: built.block_hash,
+            parent_number: 1,
+            parent_view: 1,
+            parent_digest: AllegroDigest(built.block_hash),
+            epoch: 0,
+            view: 2,
+            proposer: [0u8; 32],
+            timestamp: timestamp2,
+        }),
     )
     .await
     .expect("build_payload #2 timed out")

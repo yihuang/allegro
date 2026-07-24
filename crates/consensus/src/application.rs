@@ -374,10 +374,7 @@ impl Actor {
             proposer: proposer_bytes,
             timestamp,
         };
-        let built = self
-            .payload_builder
-            .build_payload(&request)
-            .await;
+        let built = self.payload_builder.build_payload(&request).await;
 
         let (block_bytes, block_hash, block_number) = match built {
             Ok(payload) => (
