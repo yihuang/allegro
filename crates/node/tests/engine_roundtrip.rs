@@ -10,7 +10,10 @@
 
 use std::time::{Duration, SystemTime};
 
-use allegro_consensus::{executor::ValidationResult, PayloadBuilder};
+use allegro_consensus::{
+    executor::{BuildPayloadRequest, ValidationResult},
+    PayloadBuilder,
+};
 use allegro_node::{
     builder::{create_engine_payload_builder, ForkchoiceTracker},
     chainspec::dev_chainspec,
@@ -71,14 +74,16 @@ async fn build_validate_finalize_first_block() {
     let built = tokio::time::timeout(
         Duration::from_secs(30),
         builder.build_payload(
-            launched.genesis_hash,
-            0,
-            0,
-            AllegroDigest::EMPTY,
-            0,
-            1,
-            [0u8; 32],
-            timestamp,
+            &BuildPayloadRequest {
+                parent_hash: launched.genesis_hash,
+                parent_number: 0,
+                parent_view: 0,
+                parent_digest: AllegroDigest::EMPTY,
+                epoch: 0,
+                view: 1,
+                proposer: [0u8; 32],
+                timestamp,
+            },
         ),
     )
     .await
@@ -134,14 +139,16 @@ async fn build_validate_finalize_first_block() {
     let built2 = tokio::time::timeout(
         Duration::from_secs(30),
         builder.build_payload(
-            built.block_hash,
-            1,
-            1,
-            AllegroDigest(built.block_hash),
-            0,
-            2,
-            [0u8; 32],
-            timestamp2,
+            &BuildPayloadRequest {
+                parent_hash: built.block_hash,
+                parent_number: 1,
+                parent_view: 1,
+                parent_digest: AllegroDigest(built.block_hash),
+                epoch: 0,
+                view: 2,
+                proposer: [0u8; 32],
+                timestamp: timestamp2,
+            },
         ),
     )
     .await

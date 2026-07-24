@@ -33,7 +33,7 @@ use tracing::{debug, error, info, warn};
 
 use allegro_primitives::Digest as AllegroDigest;
 
-use crate::executor::{PayloadBuilder, ValidationResult};
+use crate::executor::{BuildPayloadRequest, PayloadBuilder, ValidationResult};
 use crate::metrics::ConsensusMetrics;
 use crate::validators::ValidatorSet;
 
@@ -77,7 +77,7 @@ pub enum Message {
     Genesis(Genesis),
     Propose(Box<Propose>),
     Verify(Box<Verify>),
-    Broadcast(Broadcast),
+    Broadcast(Box<Broadcast>),
 }
 
 pub struct Genesis {
@@ -125,7 +125,7 @@ pub struct Broadcast {
 
 impl From<Broadcast> for Message {
     fn from(v: Broadcast) -> Self {
-        Self::Broadcast(v)
+        Self::Broadcast(Box::new(v))
     }
 }
 
@@ -306,7 +306,7 @@ impl Actor {
                 Message::Genesis(g) => self.handle_genesis(g).await,
                 Message::Propose(p) => self.handle_propose(*p).await,
                 Message::Verify(v) => self.handle_verify(*v).await,
-                Message::Broadcast(b) => self.handle_broadcast(b).await,
+                Message::Broadcast(b) => self.handle_broadcast(*b).await,
             }
         }
         warn!("application actor stopped");
@@ -364,18 +364,19 @@ impl Actor {
         let timestamp = std::cmp::max(now, parent_timestamp + 1);
 
         // Delegate block building to the payload builder
+        let request = BuildPayloadRequest {
+            parent_hash,
+            parent_number,
+            parent_view: parent_view.get(),
+            parent_digest,
+            epoch: msg.round.epoch().get(),
+            view: msg.round.view().get(),
+            proposer: proposer_bytes,
+            timestamp,
+        };
         let built = self
             .payload_builder
-            .build_payload(
-                parent_hash,
-                parent_number,
-                parent_view.get(),
-                parent_digest,
-                msg.round.epoch().get(),
-                msg.round.view().get(),
-                proposer_bytes,
-                timestamp,
-            )
+            .build_payload(&request)
             .await;
 
         let (block_bytes, block_hash, block_number) = match built {

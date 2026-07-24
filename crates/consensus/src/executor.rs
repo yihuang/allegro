@@ -59,14 +59,7 @@ pub trait PayloadBuilder: Send + Sync {
     /// Should construct a block from the mempool and return the RLP-encoded bytes.
     fn build_payload(
         &self,
-        parent_hash: B256,
-        parent_number: u64,
-        parent_view: u64,
-        parent_digest: AllegroDigest,
-        epoch: u64,
-        view: u64,
-        proposer: [u8; 32],
-        timestamp: u64,
+        request: &BuildPayloadRequest,
     ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>;
 
     /// Validate a block.
@@ -98,24 +91,17 @@ impl StubPayloadBuilder {
 impl PayloadBuilder for StubPayloadBuilder {
     fn build_payload(
         &self,
-        parent_hash: B256,
-        parent_number: u64,
-        parent_view: u64,
-        _parent_digest: AllegroDigest,
-        epoch: u64,
-        view: u64,
-        proposer: [u8; 32],
-        timestamp: u64,
+        request: &BuildPayloadRequest,
     ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> {
         // Build an empty block deterministically
         let result = build_empty_block_internal(
-            parent_hash,
-            parent_number,
-            parent_view,
-            epoch,
-            view,
-            proposer,
-            timestamp,
+            request.parent_hash,
+            request.parent_number,
+            request.parent_view,
+            request.epoch,
+            request.view,
+            request.proposer,
+            request.timestamp,
         );
         Box::pin(async move { result })
     }
@@ -152,6 +138,27 @@ pub struct ValidateBlockRequest {
     pub block_bytes: Vec<u8>,
     pub parent_hash: B256,
 }
+
+// ── Closure type aliases for EngineApiPayloadBuilder ───────
+
+/// Async closure that builds a payload.
+type BuildPayloadFn = Arc<
+    dyn Fn(
+            BuildPayloadRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Async closure that validates a block.
+type ValidateBlockFn = Arc<
+    dyn Fn(
+            ValidateBlockRequest,
+        )
+            -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A payload builder backed by boxed async closures.
 ///
@@ -190,42 +197,15 @@ pub struct ValidateBlockRequest {
 /// );
 /// ```
 pub struct EngineApiPayloadBuilder {
-    build_fn: Arc<
-        dyn Fn(
-                BuildPayloadRequest,
-            ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
-            + Send
-            + Sync,
-    >,
-    validate_fn: Arc<
-        dyn Fn(
-                ValidateBlockRequest,
-            )
-                -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
-            + Send
-            + Sync,
-    >,
+    build_fn: BuildPayloadFn,
+    validate_fn: ValidateBlockFn,
 }
 
 impl EngineApiPayloadBuilder {
     /// Create a new engine API payload builder with the given async closures.
     pub fn new(
-        build_fn: Arc<
-            dyn Fn(
-                    BuildPayloadRequest,
-                )
-                    -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
-                + Send
-                + Sync,
-        >,
-        validate_fn: Arc<
-            dyn Fn(
-                    ValidateBlockRequest,
-                )
-                    -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
-                + Send
-                + Sync,
-        >,
+        build_fn: BuildPayloadFn,
+        validate_fn: ValidateBlockFn,
     ) -> Self {
         Self {
             build_fn,
@@ -237,26 +217,9 @@ impl EngineApiPayloadBuilder {
 impl PayloadBuilder for EngineApiPayloadBuilder {
     fn build_payload(
         &self,
-        parent_hash: B256,
-        parent_number: u64,
-        parent_view: u64,
-        parent_digest: AllegroDigest,
-        epoch: u64,
-        view: u64,
-        proposer: [u8; 32],
-        timestamp: u64,
+        request: &BuildPayloadRequest,
     ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> {
-        let req = BuildPayloadRequest {
-            parent_hash,
-            parent_number,
-            parent_view,
-            parent_digest,
-            epoch,
-            view,
-            proposer,
-            timestamp,
-        };
-        (self.build_fn)(req)
+        (self.build_fn)(request.clone())
     }
 
     fn validate_block(

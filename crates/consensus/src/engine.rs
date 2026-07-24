@@ -393,17 +393,19 @@ pub struct StartedEngine {
 pub fn start_simplex_engine<TContext, BS, BR, BL>(
     context: TContext,
     config: EngineConfig,
-    votes: (
-        impl Sender<PublicKey = PublicKey> + 'static,
-        impl Receiver<PublicKey = PublicKey> + 'static,
-    ),
-    certs: (
-        impl Sender<PublicKey = PublicKey> + 'static,
-        impl Receiver<PublicKey = PublicKey> + 'static,
-    ),
-    resolver: (
-        impl Sender<PublicKey = PublicKey> + 'static,
-        impl Receiver<PublicKey = PublicKey> + 'static,
+    channels: (
+        (
+            impl Sender<PublicKey = PublicKey> + 'static,
+            impl Receiver<PublicKey = PublicKey> + 'static,
+        ),
+        (
+            impl Sender<PublicKey = PublicKey> + 'static,
+            impl Receiver<PublicKey = PublicKey> + 'static,
+        ),
+        (
+            impl Sender<PublicKey = PublicKey> + 'static,
+            impl Receiver<PublicKey = PublicKey> + 'static,
+        ),
     ),
     block_sender: BS,
     block_receiver: BR,
@@ -531,6 +533,7 @@ where
     });
 
     // Start the engine — returns a Handle that keeps it alive
+    let (votes, certs, resolver) = channels;
     let task = engine.start(votes, certs, resolver);
     Ok(StartedEngine { task, block_info })
 }

@@ -11,12 +11,12 @@ use std::time::Duration;
 use allegro_consensus::{
     config::ConsensusConfig,
     executor::{BuildPayloadRequest, ValidateBlockRequest},
-    start_simplex_engine, BlockMeta, BuiltPayload, EngineConfig, PayloadBuilder as _,
+    start_simplex_engine, BlockMeta, BuiltPayload, EngineConfig,
     ValidationResult, ValidatorEntry, ValidatorSet, create_reth_payload_builder,
 };
 use alloy_consensus::{BlockBody, Sealable, Signed, TxEnvelope, TxLegacy};
 use alloy_primitives::{b256, keccak256, Address, Bytes, Signature, B256, U256};
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::Decodable;
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
 use commonware_runtime::{deterministic, Clock, Metrics, Runner};
@@ -77,6 +77,7 @@ fn compute_txs_root(txs: &[TxEnvelope]) -> B256 {
     keccak256(encode_txs_list(txs))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_block(
     parent_hash: B256,
     parent_number: u64,
@@ -169,18 +170,11 @@ struct RecordingBuilder {
 impl allegro_consensus::PayloadBuilder for RecordingBuilder {
     fn build_payload(
         &self,
-        ph: B256,
-        pn: u64,
-        pv: u64,
-        pd: Digest,
-        e: u64,
-        v: u64,
-        pr: [u8; 32],
-        ts: u64,
+        req: &BuildPayloadRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<BuiltPayload, String>> + Send>>
     {
         let rec = self.recorded.clone();
-        let fut = self.inner.build_payload(ph, pn, pv, pd, e, v, pr, ts);
+        let fut = self.inner.build_payload(req);
         Box::pin(async move {
             let r = fut.await;
             if let Ok(ref p) = r {
@@ -369,9 +363,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
                         genesis_timestamp: 0,
                         finalized_tx: None,
                     },
-                    (v_tx, v_rx),
-                    (c_tx, c_rx),
-                    (r_tx, r_rx),
+                    ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
                     b_tx,
                     b_rx,
                     blk,
@@ -392,7 +384,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
 
         // ── Verify ──
         for (i, p) in proposals.iter().enumerate() {
-            assert!(p.lock().unwrap().len() >= 1, "val{i}: 0 proposals");
+            assert!(!p.lock().unwrap().is_empty(), "val{i}: 0 proposals");
         }
 
         let mut found = [false, false, false];
@@ -485,5 +477,5 @@ fn test_truncated_block_fails_validation() {
     let payload = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, vec![]).expect("build");
     // Truncate to corrupt
     let truncated = payload.block_bytes[..payload.block_bytes.len().saturating_sub(10)].to_vec();
-    assert!(matches!(validate_block(&truncated), Err(_)));
+    assert!(validate_block(&truncated).is_err());
 }

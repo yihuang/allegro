@@ -198,7 +198,7 @@ fn test_simplex_engine_initializes() {
             ingress: "127.0.0.1:3000".parse().unwrap(),
             egress: IpAddr::V4(Ipv4Addr::LOCALHOST),
         };
-        let validators = ValidatorSet::from_entries(&[entry.clone()]);
+        let validators = ValidatorSet::from_entries(std::slice::from_ref(&entry));
 
         let participants: Vec<_> = validators.keys();
         let (v_tx, v_rx) = inert_channel(&participants);
@@ -223,9 +223,7 @@ fn test_simplex_engine_initializes() {
         let started = start_simplex_engine(
             context.with_label("engine"),
             cfg,
-            (v_tx, v_rx),
-            (c_tx, c_rx),
-            (r_tx, r_rx),
+            ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
             b_tx,
             b_rx,
             blocker,
@@ -266,7 +264,7 @@ fn test_simplex_engine_loopback() {
             ingress: "127.0.0.1:3000".parse().unwrap(),
             egress: IpAddr::V4(Ipv4Addr::LOCALHOST),
         };
-        let validators = ValidatorSet::from_entries(&[entry.clone()]);
+        let validators = ValidatorSet::from_entries(std::slice::from_ref(&entry));
 
         let (vote_tx, vote_rx) = loopback_channel(pk_for_channel.clone(), 1024);
         let (cert_tx, cert_rx) = loopback_channel(pk_for_channel.clone(), 1024);
@@ -299,9 +297,7 @@ fn test_simplex_engine_loopback() {
         let started = start_simplex_engine(
             context.with_label("engine"),
             cfg,
-            (vote_tx, vote_rx),
-            (cert_tx, cert_rx),
-            (res_tx, res_rx),
+            ((vote_tx, vote_rx), (cert_tx, cert_rx), (res_tx, res_rx)),
             b_tx,
             b_rx,
             blocker,
@@ -408,9 +404,7 @@ fn test_two_validators_simulated() {
             let started = start_simplex_engine(
                 context.with_label(&format!("engine_{i}")),
                 cfg,
-                (v_tx, v_rx),
-                (c_tx, c_rx),
-                (r_tx, r_rx),
+                ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
                 b_tx,
                 b_rx,
                 blocker,
@@ -472,9 +466,7 @@ fn test_empty_validator_set_rejected() {
         let result = start_simplex_engine(
             context.with_label("engine"),
             cfg,
-            (v_tx, v_rx),
-            (c_tx, c_rx),
-            (r_tx, r_rx),
+            ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
             b_tx,
             b_rx,
             blocker,

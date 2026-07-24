@@ -154,7 +154,7 @@ fn test_allegro_two_nodes() {
 
     // Start node 0 — must also reference node 1 for mutual peer tracking.
     let node1_addr = format!("127.0.0.1:{port1}");
-    let mut node0 = spawn_node(0, port0, rpc0, &[node1_addr.clone()], &datadir0);
+    let mut node0 = spawn_node(0, port0, rpc0, std::slice::from_ref(&node1_addr), &datadir0);
 
     std::thread::sleep(Duration::from_millis(200));
 

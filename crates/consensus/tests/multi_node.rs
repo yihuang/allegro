@@ -150,9 +150,7 @@ async fn start_engines(
         let started = start_simplex_engine(
             context.with_label(&format!("engine_{i}")),
             engine_cfg,
-            (v_tx, v_rx),
-            (c_tx, c_rx),
-            (r_tx, r_rx),
+            ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
             b_tx,
             b_rx,
             blocker,
@@ -399,9 +397,7 @@ fn test_metrics_track_proposals() {
             let started = start_simplex_engine(
                 context.with_label(&format!("engine_{i}")),
                 engine_cfg,
-                (v_tx, v_rx),
-                (c_tx, c_rx),
-                (r_tx, r_rx),
+                ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
                 b_tx,
                 b_rx,
                 blocker,
