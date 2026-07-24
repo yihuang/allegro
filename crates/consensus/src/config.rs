@@ -57,18 +57,15 @@ pub struct ConsensusConfig {
 
 /// How the engine forwards block proposals to validators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ForwardingPolicy {
     /// Only forward to silent voters who haven't acknowledged the proposal.
+    #[default]
     SilentVoters,
     /// Forward to all validators (maps to SilentVoters on commonware).
     All,
 }
 
-impl Default for ForwardingPolicy {
-    fn default() -> Self {
-        Self::SilentVoters
-    }
-}
 
 impl Default for ConsensusConfig {
     fn default() -> Self {

@@ -158,7 +158,7 @@ fn main() -> eyre::Result<()> {
 
 fn init_tracing(cli: &Cli) {
     let filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(&format!("allegro={},commonware=warn", cli.log_level)))
+        .or_else(|_| EnvFilter::try_new(format!("allegro={},commonware=warn", cli.log_level)))
         .unwrap_or_else(|_| EnvFilter::new("allegro=info,commonware=warn"));
 
     let _ = tracing_subscriber::fmt()
