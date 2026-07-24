@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use alloy_primitives::B256;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
 
 use allegro_primitives::Digest as AllegroDigest;
 
@@ -58,14 +59,7 @@ pub trait PayloadBuilder: Send + Sync {
     /// Should construct a block from the mempool and return the RLP-encoded bytes.
     fn build_payload(
         &self,
-        parent_hash: B256,
-        parent_number: u64,
-        parent_view: u64,
-        parent_digest: AllegroDigest,
-        epoch: u64,
-        view: u64,
-        proposer: [u8; 32],
-        timestamp: u64,
+        request: &BuildPayloadRequest,
     ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>;
 
     /// Validate a block.
@@ -97,24 +91,17 @@ impl StubPayloadBuilder {
 impl PayloadBuilder for StubPayloadBuilder {
     fn build_payload(
         &self,
-        parent_hash: B256,
-        parent_number: u64,
-        parent_view: u64,
-        _parent_digest: AllegroDigest,
-        epoch: u64,
-        view: u64,
-        proposer: [u8; 32],
-        timestamp: u64,
+        request: &BuildPayloadRequest,
     ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> {
         // Build an empty block deterministically
         let result = build_empty_block_internal(
-            parent_hash,
-            parent_number,
-            parent_view,
-            epoch,
-            view,
-            proposer,
-            timestamp,
+            request.parent_hash,
+            request.parent_number,
+            request.parent_view,
+            request.epoch,
+            request.view,
+            request.proposer,
+            request.timestamp,
         );
         Box::pin(async move { result })
     }
@@ -151,6 +138,26 @@ pub struct ValidateBlockRequest {
     pub block_bytes: Vec<u8>,
     pub parent_hash: B256,
 }
+
+// ── Closure type aliases for EngineApiPayloadBuilder ───────
+
+/// Async closure that builds a payload.
+type BuildPayloadFn = Arc<
+    dyn Fn(
+            BuildPayloadRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Async closure that validates a block.
+type ValidateBlockFn = Arc<
+    dyn Fn(
+            ValidateBlockRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A payload builder backed by boxed async closures.
 ///
@@ -189,53 +196,26 @@ pub struct ValidateBlockRequest {
 /// );
 /// ```
 pub struct EngineApiPayloadBuilder {
-    build_fn:
-        Arc<dyn Fn(BuildPayloadRequest) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> + Send + Sync>,
-    validate_fn:
-        Arc<dyn Fn(ValidateBlockRequest) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> + Send + Sync>,
+    build_fn: BuildPayloadFn,
+    validate_fn: ValidateBlockFn,
 }
 
 impl EngineApiPayloadBuilder {
     /// Create a new engine API payload builder with the given async closures.
-    pub fn new(
-        build_fn: Arc<
-            dyn Fn(BuildPayloadRequest) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
-                + Send
-                + Sync,
-        >,
-        validate_fn: Arc<
-            dyn Fn(ValidateBlockRequest) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
-                + Send
-                + Sync,
-        >,
-    ) -> Self {
-        Self { build_fn, validate_fn }
+    pub fn new(build_fn: BuildPayloadFn, validate_fn: ValidateBlockFn) -> Self {
+        Self {
+            build_fn,
+            validate_fn,
+        }
     }
 }
 
 impl PayloadBuilder for EngineApiPayloadBuilder {
     fn build_payload(
         &self,
-        parent_hash: B256,
-        parent_number: u64,
-        parent_view: u64,
-        parent_digest: AllegroDigest,
-        epoch: u64,
-        view: u64,
-        proposer: [u8; 32],
-        timestamp: u64,
+        request: &BuildPayloadRequest,
     ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> {
-        let req = BuildPayloadRequest {
-            parent_hash,
-            parent_number,
-            parent_view,
-            parent_digest,
-            epoch,
-            view,
-            proposer,
-            timestamp,
-        };
-        (self.build_fn)(req)
+        (self.build_fn)(request.clone())
     }
 
     fn validate_block(
@@ -243,15 +223,18 @@ impl PayloadBuilder for EngineApiPayloadBuilder {
         block_bytes: Vec<u8>,
         parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
-        let req = ValidateBlockRequest { block_bytes, parent_hash };
+        let req = ValidateBlockRequest {
+            block_bytes,
+            parent_hash,
+        };
         (self.validate_fn)(req)
     }
 }
 
 // ── Empty block construction (shared between stub and real builder) ──
 
-use alloy_consensus::{Block as AlloyBlock, BlockBody, TxEnvelope, Sealable};
-use alloy_primitives::{Address, Bloom, B64, U256, keccak256};
+use alloy_consensus::{Block as AlloyBlock, BlockBody, Sealable, TxEnvelope};
+use alloy_primitives::{keccak256, Address, Bloom, B64, U256};
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, ProposerKey};
 
@@ -340,7 +323,9 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
 
     // Verify consensus context exists
     if header.consensus_context.is_none() {
-        return Ok(ValidationResult::Invalid("missing consensus context".into()));
+        return Ok(ValidationResult::Invalid(
+            "missing consensus context".into(),
+        ));
     }
 
     // Compute hash and return metadata.
@@ -351,4 +336,80 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
         number: header.inner.number,
         timestamp: header.inner.timestamp,
     }))
+}
+
+// ── Engine API helpers ─────────────────────────────────────
+
+/// Create an [`EngineApiPayloadBuilder`] from async closures.
+pub fn create_reth_payload_builder<BuildFn, ValidateFn>(
+    build_fn: BuildFn,
+    validate_fn: ValidateFn,
+) -> EngineApiPayloadBuilder
+where
+    BuildFn: Fn(
+            BuildPayloadRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+    ValidateFn: Fn(
+            ValidateBlockRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    EngineApiPayloadBuilder::new(Arc::new(build_fn), Arc::new(validate_fn))
+}
+
+/// Build forkchoice state and payload attributes from a consensus request.
+pub fn build_payload_attributes_from_request(
+    req: &BuildPayloadRequest,
+) -> (ForkchoiceState, PayloadAttributes) {
+    let forkchoice_state = ForkchoiceState {
+        head_block_hash: req.parent_hash,
+        safe_block_hash: req.parent_hash,
+        finalized_block_hash: req.parent_hash,
+    };
+    let pay_attrs = build_payload_attributes(req.parent_hash, req.timestamp);
+    (forkchoice_state, pay_attrs)
+}
+
+/// Build payload attributes for a new block.
+///
+/// Returns attributes valid for Cancun+ (DEV chainspec):
+/// - `withdrawals: Some(vec![])` for Shanghai+
+/// - `parent_beacon_block_root: Some(ZERO)` for Cancun+
+/// - `slot_number: None` / `target_gas_limit: None` since Amsterdam not activated.
+pub fn build_payload_attributes(_parent_hash: B256, timestamp: u64) -> PayloadAttributes {
+    PayloadAttributes {
+        timestamp,
+        prev_randao: B256::ZERO,
+        suggested_fee_recipient: alloy_primitives::Address::ZERO,
+        withdrawals: Some(vec![]),
+        parent_beacon_block_root: Some(B256::ZERO),
+        slot_number: None,
+        target_gas_limit: None,
+    }
+}
+
+#[cfg(test)]
+mod executor_tests {
+    use super::*;
+
+    #[test]
+    fn attrs_are_valid_for_cancun() {
+        let attrs = build_payload_attributes(B256::ZERO, 1_000_000);
+        assert!(attrs.withdrawals.is_some());
+        assert!(attrs.withdrawals.unwrap().is_empty());
+        assert!(attrs.parent_beacon_block_root.is_some());
+        assert!(attrs.slot_number.is_none());
+        assert!(attrs.target_gas_limit.is_none());
+        assert_eq!(attrs.timestamp, 1_000_000);
+        assert_eq!(attrs.prev_randao, B256::ZERO);
+        assert_eq!(
+            attrs.suggested_fee_recipient,
+            alloy_primitives::Address::ZERO
+        );
+    }
 }

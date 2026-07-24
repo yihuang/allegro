@@ -14,7 +14,6 @@ workspace = true
 [dependencies]
 allegro-consensus.workspace = true
 allegro-node.workspace = true
-allegro-reth.workspace = true
 
 clap = { workspace = true, features = ["derive"] }
 alloy-primitives.workspace = true

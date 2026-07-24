@@ -80,9 +80,7 @@ fn rpc_block_number(port: u16) -> Option<u64> {
     );
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream.write_all(req.as_bytes()).ok()?;
 
     let mut resp = String::new();
@@ -129,37 +127,34 @@ fn test_allegro_two_nodes() {
     let _ = std::fs::remove_dir_all(&datadir0);
     let _ = std::fs::remove_dir_all(&datadir1);
 
-    let spawn_node = |node: u8,
-                      listen: u16,
-                      rpc_port: u16,
-                      peers: &[String],
-                      datadir: &std::path::Path| {
-        let mut cmd = Command::new(BINARY);
-        cmd.arg("--node")
-            .arg(node.to_string())
-            .arg("--listen")
-            .arg(format!("127.0.0.1:{listen}"))
-            .arg("--datadir")
-            .arg(datadir)
-            .arg("--rpc-port")
-            .arg(rpc_port.to_string())
-            .arg("--authrpc-port")
-            .arg(free_port().to_string())
-            .arg("--reth-p2p-port")
-            .arg(free_port().to_string());
+    let spawn_node =
+        |node: u8, listen: u16, rpc_port: u16, peers: &[String], datadir: &std::path::Path| {
+            let mut cmd = Command::new(BINARY);
+            cmd.arg("--node")
+                .arg(node.to_string())
+                .arg("--listen")
+                .arg(format!("127.0.0.1:{listen}"))
+                .arg("--datadir")
+                .arg(datadir)
+                .arg("--rpc-port")
+                .arg(rpc_port.to_string())
+                .arg("--authrpc-port")
+                .arg(free_port().to_string())
+                .arg("--reth-p2p-port")
+                .arg(free_port().to_string());
 
-        for peer in peers {
-            cmd.arg("--peer").arg(peer);
-        }
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|e| panic!("failed to start node {node}: {e}"))
-    };
+            for peer in peers {
+                cmd.arg("--peer").arg(peer);
+            }
+            cmd.stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap_or_else(|e| panic!("failed to start node {node}: {e}"))
+        };
 
     // Start node 0 — must also reference node 1 for mutual peer tracking.
     let node1_addr = format!("127.0.0.1:{port1}");
-    let mut node0 = spawn_node(0, port0, rpc0, &[node1_addr.clone()], &datadir0);
+    let mut node0 = spawn_node(0, port0, rpc0, std::slice::from_ref(&node1_addr), &datadir0);
 
     std::thread::sleep(Duration::from_millis(200));
 

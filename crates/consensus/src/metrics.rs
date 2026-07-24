@@ -4,8 +4,8 @@
 //! Wrapped in `Arc` for shared ownership across components.
 
 use commonware_runtime::Metrics;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Shared consensus metrics handle.
 ///
@@ -99,12 +99,16 @@ impl ConsensusMetrics {
 
     /// Record a conflicting notarization.
     pub fn inc_conflicting_notarizations(&self) {
-        self.0.conflicting_notarizations.fetch_add(1, Ordering::Relaxed);
+        self.0
+            .conflicting_notarizations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a conflicting finalization.
     pub fn inc_conflicting_finalizations(&self) {
-        self.0.conflicting_finalizations.fetch_add(1, Ordering::Relaxed);
+        self.0
+            .conflicting_finalizations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a block broadcast.

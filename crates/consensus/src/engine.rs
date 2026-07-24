@@ -15,31 +15,27 @@ use std::time::Duration;
 use alloy_primitives::B256;
 use bytes::Buf;
 use commonware_consensus::{
-    Reporter,
     simplex::{
-        Engine, ForwardingPolicy, Plan,
-        elector::RoundRobin,
-        scheme::ed25519,
-        types::Activity,
+        elector::RoundRobin, scheme::ed25519, types::Activity, Engine, ForwardingPolicy, Plan,
     },
     types::{Epoch, ViewDelta},
-    Relay,
+    Relay, Reporter,
 };
 use commonware_cryptography::{
-    Digest, Sha256, Signer as _, ed25519::{PrivateKey, PublicKey},
+    ed25519::{PrivateKey, PublicKey},
+    Digest, Sha256, Signer as _,
 };
-use commonware_p2p::{Recipients, Receiver, Sender};
+use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{
-    BufferPooler, Clock, Handle, Metrics, Network, Pacer, Spawner, Storage,
-    buffer::paged::CacheRef,
+    buffer::paged::CacheRef, BufferPooler, Clock, Handle, Metrics, Network, Pacer, Spawner, Storage,
 };
-use commonware_utils::{NZU16, NZUsize, ordered::Set};
+use commonware_utils::{ordered::Set, NZUsize, NZU16};
 use rand_08::{CryptoRng, Rng};
 use tracing::{debug, error, info, warn};
 
 use allegro_primitives::Digest as AllegroDigest;
 
-use crate::application::{self, PendingBlocks, ReceivedBlocks, BlockInfoMap};
+use crate::application::{self, BlockInfoMap, PendingBlocks, ReceivedBlocks};
 use crate::config::ConsensusConfig;
 use crate::error::ConsensusError;
 use crate::executor::StubPayloadBuilder;
@@ -65,7 +61,11 @@ impl<S: Sender<PublicKey = PublicKey> + Send + 'static> BlockRelay<S> {
     /// `pending` is the store of blocks we've proposed (shared with the actor).
     /// `sender` is the p2p sender for the block channel.
     pub fn new(pending: PendingBlocks, sender: S, metrics: Option<ConsensusMetrics>) -> Self {
-        Self { pending, sender, metrics }
+        Self {
+            pending,
+            sender,
+            metrics,
+        }
     }
 }
 
@@ -315,10 +315,7 @@ pub struct EngineConfig {
 
 impl EngineConfig {
     /// Create a new engine configuration with the given signing key and validators.
-    pub fn new(
-        signing_key: PrivateKey,
-        validators: ValidatorSet,
-    ) -> Self {
+    pub fn new(signing_key: PrivateKey, validators: ValidatorSet) -> Self {
         Self {
             signing_key,
             validators,
@@ -396,17 +393,19 @@ pub struct StartedEngine {
 pub fn start_simplex_engine<TContext, BS, BR, BL>(
     context: TContext,
     config: EngineConfig,
-    votes: (
-        impl Sender<PublicKey = PublicKey> + 'static,
-        impl Receiver<PublicKey = PublicKey> + 'static,
-    ),
-    certs: (
-        impl Sender<PublicKey = PublicKey> + 'static,
-        impl Receiver<PublicKey = PublicKey> + 'static,
-    ),
-    resolver: (
-        impl Sender<PublicKey = PublicKey> + 'static,
-        impl Receiver<PublicKey = PublicKey> + 'static,
+    channels: (
+        (
+            impl Sender<PublicKey = PublicKey> + 'static,
+            impl Receiver<PublicKey = PublicKey> + 'static,
+        ),
+        (
+            impl Sender<PublicKey = PublicKey> + 'static,
+            impl Receiver<PublicKey = PublicKey> + 'static,
+        ),
+        (
+            impl Sender<PublicKey = PublicKey> + 'static,
+            impl Receiver<PublicKey = PublicKey> + 'static,
+        ),
     ),
     block_sender: BS,
     block_receiver: BR,
@@ -534,6 +533,7 @@ where
     });
 
     // Start the engine — returns a Handle that keeps it alive
+    let (votes, certs, resolver) = channels;
     let task = engine.start(votes, certs, resolver);
     Ok(StartedEngine { task, block_info })
 }

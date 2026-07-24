@@ -1,0 +1,10 @@
+[profile.default]
+# Default profile inherits from nextest-default
+
+[profile.ci]
+# CI profile: fail fast on test failures, retry flaky tests once
+failure-output = "immediate-final"
+retries = { backoff = "fixed", count = 1 }
+
+# Use 2 test threads to be gentle on shared resources
+test-threads = 2

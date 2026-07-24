@@ -20,7 +20,9 @@ pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
             self_key,
             tx: Arc::new(tokio::sync::Mutex::new(tx)),
         },
-        LoopbackReceiver { rx: Arc::new(tokio::sync::Mutex::new(rx)) },
+        LoopbackReceiver {
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        },
     )
 }
 
@@ -34,16 +36,28 @@ pub struct LoopbackSender<P> {
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> LimitedSender for LoopbackSender<P> {
     type PublicKey = P;
-    type Checked<'a> = LoopbackCheckedSender<P> where Self: 'a;
+    type Checked<'a>
+        = LoopbackCheckedSender<P>
+    where
+        Self: 'a;
 
-    async fn check(&mut self, _recipients: Recipients<P>) -> Result<Self::Checked<'_>, std::time::SystemTime> {
-        Ok(LoopbackCheckedSender { tx: self.tx.clone(), sent_to: self.self_key.clone() })
+    async fn check(
+        &mut self,
+        _recipients: Recipients<P>,
+    ) -> Result<Self::Checked<'_>, std::time::SystemTime> {
+        Ok(LoopbackCheckedSender {
+            tx: self.tx.clone(),
+            sent_to: self.self_key.clone(),
+        })
     }
 }
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> Clone for LoopbackSender<P> {
     fn clone(&self) -> Self {
-        Self { self_key: self.self_key.clone(), tx: self.tx.clone() }
+        Self {
+            self_key: self.self_key.clone(),
+            tx: self.tx.clone(),
+        }
     }
 }
 
@@ -81,7 +95,9 @@ pub struct LoopbackReceiver<P> {
 
 impl<P> Clone for LoopbackReceiver<P> {
     fn clone(&self) -> Self {
-        Self { rx: self.rx.clone() }
+        Self {
+            rx: self.rx.clone(),
+        }
     }
 }
 

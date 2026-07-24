@@ -15,7 +15,6 @@ workspace = true
 [dependencies]
 allegro-primitives = { path = "../primitives" }
 allegro-consensus = { path = "../consensus" }
-allegro-reth = { path = "../reth" }
 
 # Reth
 reth-chainspec.workspace = true

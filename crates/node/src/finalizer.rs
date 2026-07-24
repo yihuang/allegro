@@ -1,6 +1,6 @@
 //! Finalization forwarder: routes consensus finalization events to reth FCU.
 
-use futures::{StreamExt, channel::mpsc};
+use futures::{channel::mpsc, StreamExt};
 use reth_engine_primitives::ConsensusEngineHandle;
 use reth_ethereum_engine_primitives::EthEngineTypes;
 use tracing::{info, warn};

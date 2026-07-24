@@ -27,7 +27,9 @@ pub struct ValidatorSet {
 
 impl ValidatorSet {
     pub fn new() -> Self {
-        Self { inner: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub fn from_entries(entries: &[ValidatorEntry]) -> Self {
@@ -40,7 +42,9 @@ impl ValidatorSet {
             info!(public_key = %entry.public_key, "adding validator");
             map.insert(entry.public_key.clone(), addr);
         }
-        Self { inner: Arc::new(RwLock::new(map)) }
+        Self {
+            inner: Arc::new(RwLock::new(map)),
+        }
     }
 
     /// Return all validator public keys.
@@ -63,5 +67,7 @@ impl ValidatorSet {
 }
 
 impl Default for ValidatorSet {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

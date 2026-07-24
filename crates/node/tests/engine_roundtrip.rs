@@ -11,13 +11,13 @@
 use std::time::{Duration, SystemTime};
 
 use allegro_consensus::{
+    executor::{BuildPayloadRequest, ValidationResult},
     PayloadBuilder,
-    executor::{ValidationResult},
 };
 use allegro_node::{
-    builder::{ForkchoiceTracker, create_engine_payload_builder},
+    builder::{create_engine_payload_builder, ForkchoiceTracker},
     chainspec::dev_chainspec,
-    launch::{RethNodeConfig, launch},
+    launch::{launch, RethNodeConfig},
 };
 use allegro_primitives::Digest as AllegroDigest;
 use alloy_rpc_types_engine::ForkchoiceState;
@@ -32,7 +32,10 @@ fn free_port() -> u16 {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -70,21 +73,24 @@ async fn build_validate_finalize_first_block() {
     let timestamp = now_secs().max(launched.genesis_timestamp + 1);
     let built = tokio::time::timeout(
         Duration::from_secs(30),
-        builder.build_payload(
-            launched.genesis_hash,
-            0,
-            0,
-            AllegroDigest::EMPTY,
-            0,
-            1,
-            [0u8; 32],
+        builder.build_payload(&BuildPayloadRequest {
+            parent_hash: launched.genesis_hash,
+            parent_number: 0,
+            parent_view: 0,
+            parent_digest: AllegroDigest::EMPTY,
+            epoch: 0,
+            view: 1,
+            proposer: [0u8; 32],
             timestamp,
-        ),
+        }),
     )
     .await
     .expect("build_payload timed out")
     .expect("build_payload failed");
-    eprintln!("built block 1: {} ({})", built.block_number, built.block_hash);
+    eprintln!(
+        "built block 1: {} ({})",
+        built.block_number, built.block_hash
+    );
     assert_eq!(built.block_number, 1);
     assert_ne!(built.block_hash, alloy_primitives::B256::ZERO);
 
@@ -118,7 +124,11 @@ async fn build_validate_finalize_first_block() {
     .await
     .expect("finalization FCU timed out")
     .expect("finalization FCU failed");
-    assert!(fcu.payload_status.is_valid(), "finalization FCU not valid: {}", fcu.payload_status);
+    assert!(
+        fcu.payload_status.is_valid(),
+        "finalization FCU not valid: {}",
+        fcu.payload_status
+    );
     tracker.set_finalized(built.block_hash, built.block_number);
     eprintln!("finalized block 1");
 
@@ -126,20 +136,23 @@ async fn build_validate_finalize_first_block() {
     let timestamp2 = now_secs().max(timestamp + 1);
     let built2 = tokio::time::timeout(
         Duration::from_secs(30),
-        builder.build_payload(
-            built.block_hash,
-            1,
-            1,
-            AllegroDigest(built.block_hash),
-            0,
-            2,
-            [0u8; 32],
-            timestamp2,
-        ),
+        builder.build_payload(&BuildPayloadRequest {
+            parent_hash: built.block_hash,
+            parent_number: 1,
+            parent_view: 1,
+            parent_digest: AllegroDigest(built.block_hash),
+            epoch: 0,
+            view: 2,
+            proposer: [0u8; 32],
+            timestamp: timestamp2,
+        }),
     )
     .await
     .expect("build_payload #2 timed out")
     .expect("build_payload #2 failed");
-    eprintln!("built block 2: {} ({})", built2.block_number, built2.block_hash);
+    eprintln!(
+        "built block 2: {} ({})",
+        built2.block_number, built2.block_hash
+    );
     assert_eq!(built2.block_number, 2);
 }
