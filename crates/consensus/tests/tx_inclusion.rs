@@ -1,6 +1,6 @@
 //! E2E test: transaction broadcast and block inclusion.
 //!
-//! Uses the real [`allegro_reth::create_reth_payload_builder`] integration
+//! Uses the real [`allegro_consensus::create_reth_payload_builder`] integration
 //! point with closures that build blocks from a shared transaction pool.
 //! This tests the actual production code path through `EngineApiPayloadBuilder`.
 
@@ -12,9 +12,8 @@ use allegro_consensus::{
     config::ConsensusConfig,
     executor::{BuildPayloadRequest, ValidateBlockRequest},
     start_simplex_engine, BlockMeta, BuiltPayload, EngineConfig, PayloadBuilder as _,
-    ValidationResult, ValidatorEntry, ValidatorSet,
+    ValidationResult, ValidatorEntry, ValidatorSet, create_reth_payload_builder,
 };
-use allegro_reth::create_reth_payload_builder;
 use alloy_consensus::{BlockBody, Sealable, Signed, TxEnvelope, TxLegacy};
 use alloy_primitives::{b256, keccak256, Address, Bytes, Signature, B256, U256};
 use alloy_rlp::{Decodable, Encodable};

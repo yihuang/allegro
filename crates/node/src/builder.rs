@@ -7,10 +7,9 @@
 use std::sync::Arc;
 
 use allegro_consensus::executor::{
-    BlockMeta, BuildPayloadRequest, BuiltPayload, EngineApiPayloadBuilder, ValidateBlockRequest,
-    ValidationResult,
+    build_payload_attributes_from_request, BlockMeta, BuildPayloadRequest, BuiltPayload,
+    EngineApiPayloadBuilder, ValidateBlockRequest, ValidationResult,
 };
-use allegro_reth::build_payload_attributes_from_request;
 use alloy_primitives::B256;
 use alloy_rlp::Decodable;
 use alloy_rpc_types_engine::ForkchoiceState;

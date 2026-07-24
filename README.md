@@ -1,45 +1,15 @@
 # Allegro
 
-**Allegro** is a minimal integration of [Reth](https://github.com/paradigmxyz/reth) (execution layer) with [Commonware](https://github.com/commonwarexyz/monorepo) consensus — inspired by [Tempo](https://github.com/tempoxyz/tempo) and Commonware's [Alto](https://github.com/commonwarexyz/monorepo/tree/main/consensus) demo.
+[![CI](https://github.com/yihuang/allegro/actions/workflows/ci.yml/badge.svg)](https://github.com/yihuang/allegro/actions/workflows/ci.yml)
 
-## Architecture
+**Allegro** embeds a [Reth](https://github.com/paradigmxyz/reth) execution node
+inside a [Commonware](https://github.com/commonwarexyz/monorepo) simplex BFT
+consensus engine.  One binary, two runtimes — blocks flow through the Engine
+API channel handles rather than through JSON-RPC over localhost.
 
-```
-crates/primitives/     -- AllegroHeader, AllegroConsensusContext, Digest, Block aliases
-crates/consensus/      -- Commonware simplex engine (Automaton, application actor, codec)
-crates/reth/           -- Lightweight reth helper (create_reth_payload_builder, attrs helpers)
-crates/node/           -- Real reth integration (chainspec, launch, builder closures, finalizer)
-bin/allegro/           -- CLI entry point (stub or reth execution mode)
-docs/                  -- Integration analysis and implementation plan
-```
-
-### Execution Modes
-
-- **`--execution reth`** (default) — embeds a full `EthereumNode` (database, EVM, tx pool, JSON-RPC). Blocks are built via the engine API (`fork_choice_updated` + `get_payload`). The consensus engine runs in a separate OS thread with its own tokio runtime.
-- **`--execution stub`** — standalone consensus node using empty-block stub builder. No database, no EVM. Used for testing and light development.
-
-### Component Status
-
-| Component | Status | Details |
-|-----------|--------|---------|
-| Consensus (simplex engine) | ✅ | Commonware threshold simplex with block relay and receiver |
-| Stub payload builder | ✅ | Empty blocks with AllegroHeader consensus context |
-| Real payload builder | ✅ | Reth engine API backed, with self-import and ForkchoiceTracker |
-| Finalization forwarder | ✅ | Routes finalization certificates to reth via FCU |
-| Block-info tracking | ✅ | BlockInfoMap tracks number/hash/timestamp across propose & verify |
-| Genesis hash config | ✅ | Configurable via EngineConfig.genesis_hash (ZERO for stub) |
-| Timestamp enforcement | ✅ | `timestamp = max(now, parent_ts + 1)` to satisfy reth FCU validation |
-| Cancun+ attrs | ✅ | `parent_beacon_block_root: Some(ZERO)`, `withdrawals: Some([])` |
-| JSON-RPC | ✅ | Default on port 8545 (per node, indexed) |
-| Devnet script | ✅ | `run_devnet.sh` supports both reth and stub modes |
-| Engine roundtrip test | 🟡 | Test skeleton written but hangs on node launch (port / Runtime conflict) |
+Design and architecture are documented in **[docs/design.md](docs/design.md)**.
 
 ## Quickstart
-
-### Prerequisites
-
-- Rust 1.85+ (edition 2021)
-- `cast` (foundry) for on-chain interaction (optional)
 
 ### Build
 
@@ -47,60 +17,94 @@ docs/                  -- Integration analysis and implementation plan
 cargo build --workspace
 ```
 
-### Run a devnet (reth mode, default)
+### Run a 2-node devnet
 
 ```bash
-./run_devnet.sh 2
+./run_devnet.sh 2 13000 reth
 ```
 
-This starts 2 nodes with:
-- Reth JSON-RPC on `http://127.0.0.1:8545` (node 0) and `:8546` (node 1)
-- Engine API auth on `:8551` / `:8552`
-- Reth P2P on `:30303` / `:30304`
-- Consensus P2P on `:13000` / `:13001`
-
-Wait ~10 seconds for the first blocks, then query:
+- Node 0 RPC: `http://127.0.0.1:8545`
+- Node 1 RPC: `http://127.0.0.1:8546`
 
 ```bash
+# Check block production
 cast block-number --rpc-url http://127.0.0.1:8545
-# → 1 (or higher)
-```
+# → 0x6a9 (both nodes synchronized)
 
-### Run a devnet (stub mode)
-
-```bash
-./run_devnet.sh 2 13000 --execution stub
-```
-
-### Send a test transaction (reth mode)
-
-```bash
+# Send a transaction (uses Anvil account #0)
 cast send --rpc-url http://127.0.0.1:8545 \
-  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
   0x000000000000000000000000000000000000dEaD \
   --value 0.01ether --legacy
 ```
 
-### Run tests
+### Generate genesis config (optional)
 
 ```bash
-cargo test -p allegro-primitives -p allegro-consensus -p allegro-reth -p allegro-node
+cargo run -p allegro-xtask -- genesis \
+    --validators 4 --base-port 13000 --output ./devnet
 ```
 
-## Project Structure
+Produces `genesis.json`, `validators.json`, and per-node key files.
+
+### Cli reference
 
 ```
-bin/allegro/           -- Binary entry point (stub and reth modes)
-crates/
-  primitives/          -- Digest, AllegroHeader, type aliases
-  consensus/           -- Commonware simplex engine + payload builder trait
-  reth/                -- Closure-based payload builder constructor, attrs helpers
-  node/                -- Reth integration: chainspec, launch, builder closures, finalizer
-xtask/                 -- Devnet genesis key generation
+allegro --execution <reth|stub>    # default: reth
+        --node <N>                 # validator index (0-based)
+        --listen <ADDR>            # consensus p2p address
+        --peer <ADDR>              # repeat for every peer (all nodes must list each other)
+        --leader-timeout <MS>      # default: 2000
+        --datadir <PATH>           # reth mdbx database directory
+        --rpc-port <PORT>          # default: 8545
+        --authrpc-port <PORT>      # default: 8551
+        --reth-p2p-port <PORT>     # default: 30303
+```
+
+## Architecture
+
+```
+crates/primitives/      AllegroHeader, Digest, type aliases
+crates/consensus/       Simplex engine: Automaton actor, PayloadBuilder trait,
+                        block relay, receiver, finalization sink
+                        + Engine API helpers (attrs, closure builder)
+crates/node/            Real reth integration: launch, payload builder closures,
+                        finalizer, DEV chainspec
+bin/allegro/            CLI entry point, dual-runtime orchestration
+xtask/                  Genesis generator (Anvil mnemonic, all forks at genesis)
 docs/
-  reth-integration-analysis.md   -- Architecture analysis (Tempo comparison)
-  reth-integration-plan.md       -- Detailed implementation plan
+  design.md             Comprehensive design document
 ```
+
+## Tests
+
+```bash
+# All tests (unit + integration + engine roundtrip + process e2e)
+cargo test --workspace
+
+# Consensus-only (fast, no reth compilation)
+cargo test -p allegro-primitives -p allegro-consensus
+
+# Key integration: build → validate → finalize → next block (in-process reth)
+cargo test -p allegro-node --test engine_roundtrip
+```
+
+## Status
+
+| Component | Status |
+|-----------|--------|
+| Simplex consensus engine | ✅ |
+| Stub payload builder (empty blocks) | ✅ |
+| Real payload builder (reth Engine API) | ✅ |
+| Build → validate → finalize roundtrip | ✅ |
+| Dual-tokio-runtime orchestration | ✅ |
+| JSON-RPC (`eth_*`, `net_*`, `web3_*`) | ✅ |
+| Finalization → forkchoice forwarder | ✅ |
+| Multi-node devnet (process e2e) | ✅ |
+| Cancun+ payload attributes | ✅ |
+| Timestamp enforcement (`max(now, parent_ts + 1)`) | ✅ |
+| Genesis generator (`xtask`) | ✅ |
+| Devnet script (`run_devnet.sh`) | ✅ |
+| Deterministic-runtime tests (SimNetwork) | ✅ |
 
 ## License
 

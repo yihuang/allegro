@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use alloy_primitives::B256;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
 
 use allegro_primitives::Digest as AllegroDigest;
 
@@ -376,4 +377,79 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
         number: header.inner.number,
         timestamp: header.inner.timestamp,
     }))
+}
+
+// ── Engine API helpers ─────────────────────────────────────
+
+/// Create an [`EngineApiPayloadBuilder`] from async closures.
+pub fn create_reth_payload_builder<BuildFn, ValidateFn>(
+    build_fn: BuildFn,
+    validate_fn: ValidateFn,
+) -> EngineApiPayloadBuilder
+where
+    BuildFn: Fn(
+            BuildPayloadRequest,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>,
+        > + Send
+        + Sync
+        + 'static,
+    ValidateFn: Fn(
+            ValidateBlockRequest,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<ValidationResult, String>> + Send>,
+        > + Send
+        + Sync
+        + 'static,
+{
+    EngineApiPayloadBuilder::new(Arc::new(build_fn), Arc::new(validate_fn))
+}
+
+/// Build forkchoice state and payload attributes from a consensus request.
+pub fn build_payload_attributes_from_request(
+    req: &BuildPayloadRequest,
+) -> (ForkchoiceState, PayloadAttributes) {
+    let forkchoice_state = ForkchoiceState {
+        head_block_hash: req.parent_hash,
+        safe_block_hash: req.parent_hash,
+        finalized_block_hash: req.parent_hash,
+    };
+    let pay_attrs = build_payload_attributes(req.parent_hash, req.timestamp);
+    (forkchoice_state, pay_attrs)
+}
+
+/// Build payload attributes for a new block.
+///
+/// Returns attributes valid for Cancun+ (DEV chainspec):
+/// - `withdrawals: Some(vec![])` for Shanghai+
+/// - `parent_beacon_block_root: Some(ZERO)` for Cancun+
+/// - `slot_number: None` / `target_gas_limit: None` since Amsterdam not activated.
+pub fn build_payload_attributes(_parent_hash: B256, timestamp: u64) -> PayloadAttributes {
+    PayloadAttributes {
+        timestamp,
+        prev_randao: B256::ZERO,
+        suggested_fee_recipient: alloy_primitives::Address::ZERO,
+        withdrawals: Some(vec![]),
+        parent_beacon_block_root: Some(B256::ZERO),
+        slot_number: None,
+        target_gas_limit: None,
+    }
+}
+
+#[cfg(test)]
+mod executor_tests {
+    use super::*;
+
+    #[test]
+    fn attrs_are_valid_for_cancun() {
+        let attrs = build_payload_attributes(B256::ZERO, 1_000_000);
+        assert!(attrs.withdrawals.is_some());
+        assert!(attrs.withdrawals.unwrap().is_empty());
+        assert!(attrs.parent_beacon_block_root.is_some());
+        assert!(attrs.slot_number.is_none());
+        assert!(attrs.target_gas_limit.is_none());
+        assert_eq!(attrs.timestamp, 1_000_000);
+        assert_eq!(attrs.prev_randao, B256::ZERO);
+        assert_eq!(attrs.suggested_fee_recipient, alloy_primitives::Address::ZERO);
+    }
 }

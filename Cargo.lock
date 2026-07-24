@@ -71,7 +71,6 @@ version = "0.1.0"
 dependencies = [
  "allegro-consensus",
  "allegro-node",
- "allegro-reth",
  "alloy-primitives",
  "clap",
  "commonware-cryptography",
@@ -94,10 +93,10 @@ name = "allegro-consensus"
 version = "0.1.0"
 dependencies = [
  "allegro-primitives",
- "allegro-reth",
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-rpc-types-engine",
  "bytes",
  "commonware-codec",
  "commonware-consensus",
@@ -122,7 +121,6 @@ version = "0.1.0"
 dependencies = [
  "allegro-consensus",
  "allegro-primitives",
- "allegro-reth",
  "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
@@ -170,15 +168,6 @@ dependencies = [
  "ed25519-consensus",
  "rand_core 0.6.4",
  "serde",
-]
-
-[[package]]
-name = "allegro-reth"
-version = "0.1.0"
-dependencies = [
- "allegro-consensus",
- "alloy-primitives",
- "alloy-rpc-types-engine",
 ]
 
 [[package]]

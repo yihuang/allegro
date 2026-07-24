@@ -82,13 +82,11 @@ crates/
 │   ├── engine.rs             start_simplex_engine, BlockRelay, Reporter
 │   ├── executor.rs           PayloadBuilder trait + StubPayloadBuilder
 │   │                         + EngineApiPayloadBuilder (closure-based)
+│   │                         + attrs helpers (build_payload_attributes, …)
 │   ├── block.rs              Commonware codec for wire blocks
 │   ├── config.rs             Tunable consensus parameters
 │   ├── validators.rs         Ed25519 validator set
 │   └── metrics.rs            Counters
-│
-├── reth/                     allegro-reth       (light, no reth deps)
-│   └── payload.rs            build_payload_attributes, create_reth_payload_builder
 │
 ├── node/                     allegro-node       (reth integration)
 │   ├── launch.rs             NodeBuilder + EthereumNode launch + type aliases
@@ -112,13 +110,8 @@ allegro-consensus                 ← Simplex wiring, PayloadBuilder trait
     ├── allegro-primitives
     └── commonware-*              ← Simplex engine, p2p, storage
 
-allegro-reth                      ← Attrs helper, closure builder (light)
-    ├── allegro-consensus
-    └── alloy-rpc-types-engine
-
 allegro-node                      ← Real reth integration
     ├── allegro-consensus
-    ├── allegro-reth
     └── reth-*                    ← EthereumNode, engine primitives, DB
 
 allegro (binary)                  ← Orchestration
