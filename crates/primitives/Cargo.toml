@@ -1,0 +1,30 @@
+[package]
+name = "allegro-primitives"
+
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+bytes.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-math.workspace = true
+commonware-utils.workspace = true
+ed25519-consensus.workspace = true
+rand_core.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+default = ["std"]
+std = []
+serde = ["dep:serde"]

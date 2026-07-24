@@ -1,0 +1,37 @@
+[package]
+name = "allegro-consensus"
+
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+allegro-primitives.workspace = true
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+bytes.workspace = true
+commonware-codec.workspace = true
+governor.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-p2p = { workspace = true, features = ["mocks"] }
+commonware-parallel.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+commonware-utils.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+rand_08.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+allegro-reth = { path = "../reth" }
+tracing-subscriber.workspace = true

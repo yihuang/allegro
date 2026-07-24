@@ -1,0 +1,56 @@
+[package]
+name = "allegro-node"
+description = "Reth node integration for Allegro consensus"
+
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+allegro-primitives = { path = "../primitives" }
+allegro-consensus = { path = "../consensus" }
+allegro-reth = { path = "../reth" }
+
+# Reth
+reth-chainspec.workspace = true
+reth-cli-runner.workspace = true
+reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-engine-primitives.workspace = true
+reth-ethereum = { workspace = true, features = ["node"] }
+reth-ethereum-engine-primitives.workspace = true
+reth-node-api.workspace = true
+reth-node-builder.workspace = true
+reth-node-core.workspace = true
+reth-node-ethereum.workspace = true
+reth-payload-builder.workspace = true
+reth-payload-primitives.workspace = true
+reth-ethereum-primitives = { workspace = true }
+reth-primitives-traits = { workspace = true }
+reth-provider.workspace = true
+reth-tasks.workspace = true
+
+# Alloy (beyond workspace defaults)
+alloy-primitives.workspace = true
+alloy-rpc-types-engine = { workspace = true }
+alloy-rlp.workspace = true
+
+# General
+commonware-runtime.workspace = true
+eyre.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# Reth test utilities (TempDatabase, testing_node, etc.)
+reth-ethereum = { workspace = true, features = ["node", "test-utils"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+commonware-cryptography.workspace = true
