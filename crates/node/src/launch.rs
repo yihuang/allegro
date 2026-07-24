@@ -11,22 +11,23 @@ use reth_chainspec::ChainSpec;
 use reth_db::init_db;
 use reth_engine_primitives::ConsensusEngineHandle;
 use reth_ethereum::node::{
-    EthereumNode,
     builder::{NodeBuilder, NodeHandle},
     core::{
-        args::RpcServerArgs,
-        node_config::NodeConfig,
         args::DatadirArgs,
         args::NetworkArgs,
-        dirs::{MaybePlatformPath, DataDirPath},
+        args::RpcServerArgs,
+        dirs::{DataDirPath, MaybePlatformPath},
+        node_config::NodeConfig,
     },
+    EthereumNode,
 };
 use reth_ethereum_engine_primitives::EthEngineTypes;
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_tasks::TaskExecutor;
 
 /// Type aliases for the launched full node (standard Ethereum components).
-pub type AllegroFullNodeTypes = reth_node_builder::RethFullAdapter<reth_db::DatabaseEnv, EthereumNode>;
+pub type AllegroFullNodeTypes =
+    reth_node_builder::RethFullAdapter<reth_db::DatabaseEnv, EthereumNode>;
 pub type AllegroNodeAdapter = reth_node_builder::NodeAdapter<AllegroFullNodeTypes>;
 pub type AllegroFullNode = reth_node_builder::node::FullNode<
     AllegroNodeAdapter,
@@ -143,7 +144,10 @@ pub async fn launch(
             ..Default::default()
         });
 
-    let NodeHandle { node, node_exit_future } = NodeBuilder::new(node_config)
+    let NodeHandle {
+        node,
+        node_exit_future,
+    } = NodeBuilder::new(node_config)
         .with_database(db)
         .with_launch_context(task_executor)
         .node(EthereumNode::default())

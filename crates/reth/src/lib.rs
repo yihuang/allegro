@@ -8,6 +8,5 @@
 
 mod payload;
 pub use payload::{
-    build_payload_attributes, build_payload_attributes_from_request,
-    create_reth_payload_builder,
+    build_payload_attributes, build_payload_attributes_from_request, create_reth_payload_builder,
 };

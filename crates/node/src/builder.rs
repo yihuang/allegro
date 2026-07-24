@@ -6,20 +6,20 @@
 
 use std::sync::Arc;
 
+use allegro_consensus::executor::{
+    BlockMeta, BuildPayloadRequest, BuiltPayload, EngineApiPayloadBuilder, ValidateBlockRequest,
+    ValidationResult,
+};
+use allegro_reth::build_payload_attributes_from_request;
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::ForkchoiceState;
 use alloy_rlp::Decodable;
+use alloy_rpc_types_engine::ForkchoiceState;
 use parking_lot::RwLock;
-use reth_ethereum_engine_primitives::{EthEngineTypes, EthPayloadTypes};
 use reth_engine_primitives::ConsensusEngineHandle;
+use reth_ethereum_engine_primitives::{EthEngineTypes, EthPayloadTypes};
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{PayloadKind, PayloadTypes};
 use reth_primitives_traits::SealedBlock;
-use allegro_consensus::executor::{
-    BlockMeta, BuildPayloadRequest, BuiltPayload, EngineApiPayloadBuilder,
-    ValidateBlockRequest, ValidationResult,
-};
-use allegro_reth::build_payload_attributes_from_request;
 
 /// Tracks the last finalized block hash and number.
 ///
@@ -110,10 +110,7 @@ pub fn create_engine_payload_builder(
                     alloy_rpc_types_engine::PayloadStatusEnum::Valid
                     | alloy_rpc_types_engine::PayloadStatusEnum::Accepted => {}
                     other => {
-                        return Err(format!(
-                            "self-import rejected ({:?})",
-                            other
-                        ));
+                        return Err(format!("self-import rejected ({:?})", other));
                     }
                 }
 
@@ -162,9 +159,9 @@ pub fn create_engine_payload_builder(
                             timestamp,
                         }))
                     }
-                    alloy_rpc_types_engine::PayloadStatusEnum::Invalid {
-                        validation_error,
-                    } => Ok(ValidationResult::Invalid(validation_error)),
+                    alloy_rpc_types_engine::PayloadStatusEnum::Invalid { validation_error } => {
+                        Ok(ValidationResult::Invalid(validation_error))
+                    }
                     alloy_rpc_types_engine::PayloadStatusEnum::Syncing
                     | alloy_rpc_types_engine::PayloadStatusEnum::Accepted => {
                         Err("parent unknown to execution layer (syncing)".to_string())

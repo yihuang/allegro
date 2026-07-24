@@ -15,14 +15,13 @@ use alloy_genesis::{ChainConfig, Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, U256};
 use alloy_signer_local::MnemonicBuilder;
 use clap::Parser;
-use commonware_cryptography::Signer as _;
 use commonware_cryptography::ed25519::PrivateKey;
+use commonware_cryptography::Signer as _;
 use eyre::WrapErr;
 use serde::{Deserialize, Serialize};
 
 /// The standard Anvil mnemonic used across the Ethereum tooling ecosystem.
-const ANVIL_MNEMONIC: &str =
-    "test test test test test test test test test test test junk";
+const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
 
 /// Number of prefunded accounts to create (20 = same as anvil / DEV spec).
 const PREFUND_COUNT: u32 = 20;
@@ -154,18 +153,21 @@ impl GenesisCmd {
 
         // ── Write output files ──
         let genesis_path = output.join("genesis.json");
-        let genesis_json = serde_json::to_string_pretty(&genesis)
-            .wrap_err("serialize genesis")?;
+        let genesis_json = serde_json::to_string_pretty(&genesis).wrap_err("serialize genesis")?;
         std::fs::write(&genesis_path, &genesis_json)
             .wrap_err_with(|| format!("write {}", genesis_path.display()))?;
         println!("wrote genesis to {}", genesis_path.display());
 
         let val_path = output.join("validators.json");
-        let val_json = serde_json::to_string_pretty(&validators)
-            .wrap_err("serialize validators")?;
+        let val_json =
+            serde_json::to_string_pretty(&validators).wrap_err("serialize validators")?;
         std::fs::write(&val_path, &val_json)
             .wrap_err_with(|| format!("write {}", val_path.display()))?;
-        println!("wrote {} validators to {}", validators.len(), val_path.display());
+        println!(
+            "wrote {} validators to {}",
+            validators.len(),
+            val_path.display()
+        );
 
         // Per-node key files
         for v in &validators {
@@ -227,13 +229,16 @@ mod tests {
         let signer = MnemonicBuilder::from_phrase_nth(ANVIL_MNEMONIC, 0);
         assert_eq!(
             signer.to_bytes(),
-            B256::from_slice(&hex::decode(
-                "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-            ).unwrap())
+            B256::from_slice(
+                &hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+                    .unwrap()
+            )
         );
         assert_eq!(
             signer.address(),
-            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".parse::<Address>().unwrap()
+            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+                .parse::<Address>()
+                .unwrap()
         );
     }
 }

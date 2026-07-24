@@ -1,8 +1,8 @@
 //! Allegro block header, extending the Ethereum header with consensus metadata.
 
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, Bloom, B256, B64, BlockNumber, Bytes, U256, keccak256};
-use alloy_rlp::{RlpDecodable, RlpEncodable, Decodable, Encodable, Header as RlpHeader};
+use alloy_primitives::{keccak256, Address, BlockNumber, Bloom, Bytes, B256, B64, U256};
+use alloy_rlp::{Decodable, Encodable, Header as RlpHeader, RlpDecodable, RlpEncodable};
 use bytes::BufMut;
 
 /// A raw Ed25519 public key (32 bytes) stored in the block header.
@@ -97,7 +97,11 @@ impl Encodable for AllegroConsensusContext {
         // Proposer as RLP byte string (0xa0 + 32 raw bytes)
         payload.extend_from_slice(&alloy_rlp::encode(&self.proposer.0[..]));
 
-        RlpHeader { list: true, payload_length: payload.len() }.encode(out);
+        RlpHeader {
+            list: true,
+            payload_length: payload.len(),
+        }
+        .encode(out);
         out.put_slice(&payload);
     }
 
@@ -108,7 +112,15 @@ impl Encodable for AllegroConsensusContext {
         self.parent_view.encode(&mut payload);
         payload.extend_from_slice(&alloy_rlp::encode(&self.proposer.0[..]));
         let pl = payload.len();
-        let hdr = if pl <= 55 { 1 } else if pl <= 0xff { 2 } else if pl <= 0xffff { 3 } else { 4 };
+        let hdr = if pl <= 55 {
+            1
+        } else if pl <= 0xff {
+            2
+        } else if pl <= 0xffff {
+            3
+        } else {
+            4
+        };
         hdr + pl
     }
 }
@@ -123,7 +135,12 @@ impl Decodable for AllegroConsensusContext {
         let view = u64::decode(buf)?;
         let parent_view = u64::decode(buf)?;
         let proposer = ProposerKey::decode(buf)?;
-        Ok(Self { epoch, view, parent_view, proposer })
+        Ok(Self {
+            epoch,
+            view,
+            parent_view,
+            proposer,
+        })
     }
 }
 
@@ -140,7 +157,10 @@ pub struct AllegroHeader {
 
 impl AllegroHeader {
     pub fn new(inner: Header, consensus_context: Option<AllegroConsensusContext>) -> Self {
-        Self { inner, consensus_context }
+        Self {
+            inner,
+            consensus_context,
+        }
     }
 
     pub fn epoch(&self) -> Option<u64> {
@@ -159,33 +179,81 @@ impl AllegroHeader {
 // ── BlockHeader trait delegation ──
 
 impl AsRef<Self> for AllegroHeader {
-    fn as_ref(&self) -> &Self { self }
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl BlockHeader for AllegroHeader {
-    fn parent_hash(&self) -> B256 { self.inner.parent_hash() }
-    fn ommers_hash(&self) -> B256 { self.inner.ommers_hash() }
-    fn beneficiary(&self) -> Address { self.inner.beneficiary() }
-    fn state_root(&self) -> B256 { self.inner.state_root() }
-    fn transactions_root(&self) -> B256 { self.inner.transactions_root() }
-    fn receipts_root(&self) -> B256 { self.inner.receipts_root() }
-    fn withdrawals_root(&self) -> Option<B256> { self.inner.withdrawals_root() }
-    fn logs_bloom(&self) -> Bloom { self.inner.logs_bloom() }
-    fn difficulty(&self) -> U256 { self.inner.difficulty() }
-    fn number(&self) -> BlockNumber { self.inner.number() }
-    fn gas_limit(&self) -> u64 { self.inner.gas_limit() }
-    fn gas_used(&self) -> u64 { self.inner.gas_used() }
-    fn timestamp(&self) -> u64 { self.inner.timestamp() }
-    fn mix_hash(&self) -> Option<B256> { self.inner.mix_hash() }
-    fn nonce(&self) -> Option<B64> { self.inner.nonce() }
-    fn base_fee_per_gas(&self) -> Option<u64> { self.inner.base_fee_per_gas() }
-    fn blob_gas_used(&self) -> Option<u64> { self.inner.blob_gas_used() }
-    fn excess_blob_gas(&self) -> Option<u64> { self.inner.excess_blob_gas() }
-    fn parent_beacon_block_root(&self) -> Option<B256> { self.inner.parent_beacon_block_root() }
-    fn requests_hash(&self) -> Option<B256> { self.inner.requests_hash() }
-    fn block_access_list_hash(&self) -> Option<B256> { self.inner.block_access_list_hash() }
-    fn slot_number(&self) -> Option<u64> { self.inner.slot_number() }
-    fn extra_data(&self) -> &Bytes { self.inner.extra_data() }
+    fn parent_hash(&self) -> B256 {
+        self.inner.parent_hash()
+    }
+    fn ommers_hash(&self) -> B256 {
+        self.inner.ommers_hash()
+    }
+    fn beneficiary(&self) -> Address {
+        self.inner.beneficiary()
+    }
+    fn state_root(&self) -> B256 {
+        self.inner.state_root()
+    }
+    fn transactions_root(&self) -> B256 {
+        self.inner.transactions_root()
+    }
+    fn receipts_root(&self) -> B256 {
+        self.inner.receipts_root()
+    }
+    fn withdrawals_root(&self) -> Option<B256> {
+        self.inner.withdrawals_root()
+    }
+    fn logs_bloom(&self) -> Bloom {
+        self.inner.logs_bloom()
+    }
+    fn difficulty(&self) -> U256 {
+        self.inner.difficulty()
+    }
+    fn number(&self) -> BlockNumber {
+        self.inner.number()
+    }
+    fn gas_limit(&self) -> u64 {
+        self.inner.gas_limit()
+    }
+    fn gas_used(&self) -> u64 {
+        self.inner.gas_used()
+    }
+    fn timestamp(&self) -> u64 {
+        self.inner.timestamp()
+    }
+    fn mix_hash(&self) -> Option<B256> {
+        self.inner.mix_hash()
+    }
+    fn nonce(&self) -> Option<B64> {
+        self.inner.nonce()
+    }
+    fn base_fee_per_gas(&self) -> Option<u64> {
+        self.inner.base_fee_per_gas()
+    }
+    fn blob_gas_used(&self) -> Option<u64> {
+        self.inner.blob_gas_used()
+    }
+    fn excess_blob_gas(&self) -> Option<u64> {
+        self.inner.excess_blob_gas()
+    }
+    fn parent_beacon_block_root(&self) -> Option<B256> {
+        self.inner.parent_beacon_block_root()
+    }
+    fn requests_hash(&self) -> Option<B256> {
+        self.inner.requests_hash()
+    }
+    fn block_access_list_hash(&self) -> Option<B256> {
+        self.inner.block_access_list_hash()
+    }
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
+    }
+    fn extra_data(&self) -> &Bytes {
+        self.inner.extra_data()
+    }
 }
 
 impl Sealable for AllegroHeader {
@@ -196,7 +264,10 @@ impl Sealable for AllegroHeader {
 
 impl From<Header> for AllegroHeader {
     fn from(inner: Header) -> Self {
-        Self { inner, consensus_context: None }
+        Self {
+            inner,
+            consensus_context: None,
+        }
     }
 }
 
@@ -208,9 +279,16 @@ mod tests {
     #[test]
     fn header_rlp_roundtrip_with_context() {
         let header = AllegroHeader {
-            inner: Header { number: 42, timestamp: 1_700_000_000, ..Default::default() },
+            inner: Header {
+                number: 42,
+                timestamp: 1_700_000_000,
+                ..Default::default()
+            },
             consensus_context: Some(AllegroConsensusContext {
-                epoch: 1, view: 5, parent_view: 4, proposer: ProposerKey([0xab; 32]),
+                epoch: 1,
+                view: 5,
+                parent_view: 4,
+                proposer: ProposerKey([0xab; 32]),
             }),
         };
         let encoded = alloy_rlp::encode(&header);
@@ -221,7 +299,10 @@ mod tests {
     #[test]
     fn header_rlp_roundtrip_without_context() {
         let header = AllegroHeader {
-            inner: Header { number: 0, ..Default::default() },
+            inner: Header {
+                number: 0,
+                ..Default::default()
+            },
             consensus_context: None,
         };
         let encoded = alloy_rlp::encode(&header);
@@ -232,7 +313,10 @@ mod tests {
     #[test]
     fn header_hash_deterministic() {
         let header = AllegroHeader {
-            inner: Header { number: 42, ..Default::default() },
+            inner: Header {
+                number: 42,
+                ..Default::default()
+            },
             consensus_context: None,
         };
         let h1 = header.hash_slow();

@@ -18,15 +18,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use allegro_consensus::{
-    ConsensusMetrics, EngineConfig, ValidatorEntry, ValidatorSet, start_simplex_engine,
     config::{ConsensusConfig, ForwardingPolicy},
+    start_simplex_engine, ConsensusMetrics, EngineConfig, ValidatorEntry, ValidatorSet,
 };
 use clap::{Parser, ValueEnum};
-use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-use commonware_p2p::AddressableManager;
+use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::authenticated::lookup;
+use commonware_p2p::AddressableManager;
 use commonware_runtime::{Clock, Metrics, Runner};
-use commonware_utils::{NZUsize, ordered::Map};
+use commonware_utils::{ordered::Map, NZUsize};
 use tracing::info;
 use tracing_subscriber::filter::EnvFilter;
 
@@ -52,30 +52,67 @@ pub struct Cli {
     #[arg(long = "node", default_value = "0", env = "ALLEGRO_NODE")]
     pub node: u8,
     /// P2P listen address (consensus layer).
-    #[arg(long = "listen", short = 'l', default_value = "0.0.0.0:3000", env = "ALLEGRO_LISTEN")]
+    #[arg(
+        long = "listen",
+        short = 'l',
+        default_value = "0.0.0.0:3000",
+        env = "ALLEGRO_LISTEN"
+    )]
     pub listen: SocketAddr,
     /// Peer addresses for the consensus P2P network.
     #[arg(short = 'p', long = "peer", env = "ALLEGRO_PEER")]
     pub peers: Vec<SocketAddr>,
 
     // ── Consensus timing ──
-    #[arg(long = "leader-timeout", default_value = "2000", env = "ALLEGRO_LEADER_TIMEOUT")]
+    #[arg(
+        long = "leader-timeout",
+        default_value = "2000",
+        env = "ALLEGRO_LEADER_TIMEOUT"
+    )]
     pub leader_timeout_ms: u64,
-    #[arg(long = "cert-timeout", default_value = "4000", env = "ALLEGRO_CERT_TIMEOUT")]
+    #[arg(
+        long = "cert-timeout",
+        default_value = "4000",
+        env = "ALLEGRO_CERT_TIMEOUT"
+    )]
     pub cert_timeout_ms: u64,
-    #[arg(long = "timeout-retry", default_value = "1000", env = "ALLEGRO_TIMEOUT_RETRY")]
+    #[arg(
+        long = "timeout-retry",
+        default_value = "1000",
+        env = "ALLEGRO_TIMEOUT_RETRY"
+    )]
     pub timeout_retry_ms: u64,
-    #[arg(long = "fetch-timeout", default_value = "2000", env = "ALLEGRO_FETCH_TIMEOUT")]
+    #[arg(
+        long = "fetch-timeout",
+        default_value = "2000",
+        env = "ALLEGRO_FETCH_TIMEOUT"
+    )]
     pub fetch_timeout_ms: u64,
 
     // ── P2P ──
-    #[arg(long = "max-msg-size", default_value = "1048576", env = "ALLEGRO_MAX_MSG_SIZE")]
+    #[arg(
+        long = "max-msg-size",
+        default_value = "1048576",
+        env = "ALLEGRO_MAX_MSG_SIZE"
+    )]
     pub max_msg_size: u32,
-    #[arg(long = "mailbox-size", default_value = "1024", env = "ALLEGRO_MAILBOX_SIZE")]
+    #[arg(
+        long = "mailbox-size",
+        default_value = "1024",
+        env = "ALLEGRO_MAILBOX_SIZE"
+    )]
     pub mailbox_size: usize,
-    #[arg(long = "activity-timeout", default_value = "10", env = "ALLEGRO_ACTIVITY_TIMEOUT")]
+    #[arg(
+        long = "activity-timeout",
+        default_value = "10",
+        env = "ALLEGRO_ACTIVITY_TIMEOUT"
+    )]
     pub activity_timeout: u64,
-    #[arg(long = "skip-timeout", default_value = "5", env = "ALLEGRO_SKIP_TIMEOUT")]
+    #[arg(
+        long = "skip-timeout",
+        default_value = "5",
+        env = "ALLEGRO_SKIP_TIMEOUT"
+    )]
     pub skip_timeout: u64,
     #[arg(long = "synchrony", default_value = "2000", env = "ALLEGRO_SYNCHRONY")]
     pub synchrony_ms: u64,
@@ -91,9 +128,17 @@ pub struct Cli {
     pub datadir: Option<PathBuf>,
     #[arg(long = "rpc-port", default_value = "8545", env = "ALLEGRO_RPC_PORT")]
     pub rpc_port: u16,
-    #[arg(long = "authrpc-port", default_value = "8551", env = "ALLEGRO_AUTHRPC_PORT")]
+    #[arg(
+        long = "authrpc-port",
+        default_value = "8551",
+        env = "ALLEGRO_AUTHRPC_PORT"
+    )]
     pub authrpc_port: u16,
-    #[arg(long = "reth-p2p-port", default_value = "30303", env = "ALLEGRO_RETH_P2P_PORT")]
+    #[arg(
+        long = "reth-p2p-port",
+        default_value = "30303",
+        env = "ALLEGRO_RETH_P2P_PORT"
+    )]
     pub reth_p2p_port: u16,
     #[arg(long = "genesis", env = "ALLEGRO_GENESIS")]
     pub genesis: Option<PathBuf>,
@@ -203,21 +248,26 @@ async fn track_peers(
     my_pk: &commonware_cryptography::ed25519::PublicKey,
     validators: &ValidatorSet,
 ) {
-    let pairs: Vec<(commonware_cryptography::ed25519::PublicKey, commonware_p2p::Address)> =
-        validators
-            .keys()
-            .into_iter()
-            .filter_map(|k| {
-                if k == *my_pk {
-                    None
-                } else {
-                    validators.lookup(&k).map(|a| (k, a))
-                }
-            })
-            .collect();
+    let pairs: Vec<(
+        commonware_cryptography::ed25519::PublicKey,
+        commonware_p2p::Address,
+    )> = validators
+        .keys()
+        .into_iter()
+        .filter_map(|k| {
+            if k == *my_pk {
+                None
+            } else {
+                validators.lookup(&k).map(|a| (k, a))
+            }
+        })
+        .collect();
     if !pairs.is_empty() {
         oracle
-            .track(0, Map::try_from(pairs).expect("unique validator public keys"))
+            .track(
+                0,
+                Map::try_from(pairs).expect("unique validator public keys"),
+            )
             .await;
     }
 }
@@ -237,9 +287,12 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
     let runner = commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
 
     runner.start(|context| async move {
-        let (mut network, mut oracle) =
-            lookup::Network::new(context.with_label("p2p"), dev_lookup_config(&cli, sk.clone()));
-        let q = |n| commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"));
+        let (mut network, mut oracle) = lookup::Network::new(
+            context.with_label("p2p"),
+            dev_lookup_config(&cli, sk.clone()),
+        );
+        let q =
+            |n| commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"));
         let votes = network.register(0, q(128), cli.mailbox_size);
         let certs = network.register(1, q(128), cli.mailbox_size);
         let resolver = network.register(2, q(128), cli.mailbox_size);
@@ -248,7 +301,11 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
         track_peers(&mut oracle, &pk, &validators).await;
         network.start();
 
-        let metrics = if cli.metrics { Some(ConsensusMetrics::new()) } else { None };
+        let metrics = if cli.metrics {
+            Some(ConsensusMetrics::new())
+        } else {
+            None
+        };
 
         let _started = start_simplex_engine(
             context.with_label("engine"),
@@ -334,8 +391,9 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                     context.with_label("p2p"),
                     dev_lookup_config(&c_cli, c_sk.clone()),
                 );
-                let q =
-                    |n| commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"));
+                let q = |n| {
+                    commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"))
+                };
                 let votes = network.register(0, q(128), c_cli.mailbox_size);
                 let certs = network.register(1, q(128), c_cli.mailbox_size);
                 let resolver = network.register(2, q(128), c_cli.mailbox_size);
@@ -344,11 +402,14 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                 track_peers(&mut oracle, &c_pk, &c_validators).await;
                 network.start();
 
-                let metrics = if c_cli.metrics { Some(ConsensusMetrics::new()) } else { None };
+                let metrics = if c_cli.metrics {
+                    Some(ConsensusMetrics::new())
+                } else {
+                    None
+                };
 
                 // ── Payload builder (real reth engine API) ──
-                let tracker =
-                    allegro_node::builder::ForkchoiceTracker::new(g_hash);
+                let tracker = allegro_node::builder::ForkchoiceTracker::new(g_hash);
                 let engine_builder = allegro_node::builder::create_engine_payload_builder(
                     _engine_h.clone(),
                     _payload_h.clone(),

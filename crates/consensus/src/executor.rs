@@ -189,27 +189,47 @@ pub struct ValidateBlockRequest {
 /// );
 /// ```
 pub struct EngineApiPayloadBuilder {
-    build_fn:
-        Arc<dyn Fn(BuildPayloadRequest) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> + Send + Sync>,
-    validate_fn:
-        Arc<dyn Fn(ValidateBlockRequest) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> + Send + Sync>,
+    build_fn: Arc<
+        dyn Fn(
+                BuildPayloadRequest,
+            ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
+            + Send
+            + Sync,
+    >,
+    validate_fn: Arc<
+        dyn Fn(
+                ValidateBlockRequest,
+            )
+                -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
+            + Send
+            + Sync,
+    >,
 }
 
 impl EngineApiPayloadBuilder {
     /// Create a new engine API payload builder with the given async closures.
     pub fn new(
         build_fn: Arc<
-            dyn Fn(BuildPayloadRequest) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
+            dyn Fn(
+                    BuildPayloadRequest,
+                )
+                    -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
                 + Send
                 + Sync,
         >,
         validate_fn: Arc<
-            dyn Fn(ValidateBlockRequest) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
+            dyn Fn(
+                    ValidateBlockRequest,
+                )
+                    -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
                 + Send
                 + Sync,
         >,
     ) -> Self {
-        Self { build_fn, validate_fn }
+        Self {
+            build_fn,
+            validate_fn,
+        }
     }
 }
 
@@ -243,15 +263,18 @@ impl PayloadBuilder for EngineApiPayloadBuilder {
         block_bytes: Vec<u8>,
         parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
-        let req = ValidateBlockRequest { block_bytes, parent_hash };
+        let req = ValidateBlockRequest {
+            block_bytes,
+            parent_hash,
+        };
         (self.validate_fn)(req)
     }
 }
 
 // ── Empty block construction (shared between stub and real builder) ──
 
-use alloy_consensus::{Block as AlloyBlock, BlockBody, TxEnvelope, Sealable};
-use alloy_primitives::{Address, Bloom, B64, U256, keccak256};
+use alloy_consensus::{Block as AlloyBlock, BlockBody, Sealable, TxEnvelope};
+use alloy_primitives::{keccak256, Address, Bloom, B64, U256};
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, ProposerKey};
 
@@ -340,7 +363,9 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
 
     // Verify consensus context exists
     if header.consensus_context.is_none() {
-        return Ok(ValidationResult::Invalid("missing consensus context".into()));
+        return Ok(ValidationResult::Invalid(
+            "missing consensus context".into(),
+        ));
     }
 
     // Compute hash and return metadata.

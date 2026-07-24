@@ -9,11 +9,11 @@ use std::{
     time::Duration,
 };
 
-use allegro_consensus::{
-    Block, ValidatorEntry, ValidatorSet, EngineConfig, StubPayloadBuilder, start_simplex_engine,
-    config::ConsensusConfig,
-};
 use allegro_consensus::application::{self as app_actor, Actor, Mailbox};
+use allegro_consensus::{
+    config::ConsensusConfig, start_simplex_engine, Block, EngineConfig, StubPayloadBuilder,
+    ValidatorEntry, ValidatorSet,
+};
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, Digest};
 use alloy_consensus::Header;
@@ -21,12 +21,12 @@ use alloy_primitives::B256;
 use alloy_rlp::Decodable;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::{
-    Automaton,
     simplex::types::Context,
     types::{Epoch, Round, View},
+    Automaton,
 };
-use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-use commonware_runtime::{Clock, Metrics, Runner, deterministic};
+use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
+use commonware_runtime::{deterministic, Clock, Metrics, Runner};
 use tokio::sync::oneshot;
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -51,8 +51,7 @@ fn make_validator(seed: u8, port: u16) -> ValidatorEntry {
 
 fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
     let (pending, received, block_info) = app_actor::new_block_stores();
-    let builder: Arc<dyn allegro_consensus::PayloadBuilder> =
-        Arc::new(StubPayloadBuilder::new());
+    let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(StubPayloadBuilder::new());
     let (actor, mailbox) = Actor::new(
         validators,
         1024,
@@ -82,8 +81,7 @@ fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
 
 #[tokio::test]
 async fn test_consensus_block_production() {
-    let entries: Vec<ValidatorEntry> =
-        (0..4).map(|i| make_validator(i, 3000 + i as u16)).collect();
+    let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3000 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
     let (mut mailbox, _shutdown) = spawn_actor(validators.clone());
 
@@ -171,8 +169,7 @@ fn test_block_codec() {
 
 #[test]
 fn test_validator_set() {
-    let entries: Vec<ValidatorEntry> =
-        (0..4).map(|i| make_validator(i, 3000 + i as u16)).collect();
+    let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3000 + i as u16)).collect();
     let set = ValidatorSet::from_entries(&entries);
     assert_eq!(set.len(), 4);
     assert!(set.lookup(&entries[0].public_key).is_some());
@@ -253,13 +250,12 @@ fn test_simplex_engine_loopback() {
 
     let _ = tracing_subscriber::fmt::try_init();
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::filter::EnvFilter::new("allegro=warn,commonware=warn"),
-        )
+        .with_env_filter(tracing_subscriber::filter::EnvFilter::new(
+            "allegro=warn,commonware=warn",
+        ))
         .try_init();
 
-    let runner =
-        commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
+    let runner = commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
 
     runner.start(|context| async move {
         let sk = PrivateKey::from_seed(0);
@@ -334,17 +330,13 @@ fn test_two_validators_simulated() {
     use commonware_p2p::simulated::{Config as SimConfig, Network as SimNetwork};
 
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::filter::EnvFilter::new("allegro=warn"),
-        )
+        .with_env_filter(tracing_subscriber::filter::EnvFilter::new("allegro=warn"))
         .try_init();
 
     let runner = deterministic::Runner::default();
     runner.start(|context| async move {
         // 2 validator keys
-        let keys: Vec<PrivateKey> = (0..2)
-            .map(|i| PrivateKey::from_seed(i as u64))
-            .collect();
+        let keys: Vec<PrivateKey> = (0..2).map(|i| PrivateKey::from_seed(i as u64)).collect();
         let pks: Vec<_> = keys.iter().map(|sk| sk.public_key()).collect();
 
         // Simulated network with all peers
@@ -379,8 +371,7 @@ fn test_two_validators_simulated() {
             .collect();
         let vs = ValidatorSet::from_entries(&entries);
 
-        let quota =
-            commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(1024).unwrap());
+        let quota = commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(1024).unwrap());
 
         // Shared proposal log across all validators
         let all_proposals = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

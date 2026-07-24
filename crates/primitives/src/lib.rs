@@ -2,11 +2,11 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-mod header;
 mod digest;
+mod header;
 
-pub use header::{AllegroConsensusContext, AllegroHeader, ProposerKey};
 pub use digest::Digest;
+pub use header::{AllegroConsensusContext, AllegroHeader, ProposerKey};
 
 use alloy_consensus::Sealable;
 use alloy_primitives::B256;

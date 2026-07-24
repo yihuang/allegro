@@ -17,13 +17,13 @@ use std::time::Duration;
 use alloy_primitives::B256;
 
 use allegro_consensus::{
-    ConsensusMetrics, EngineConfig, ValidatorEntry, ValidatorSet, start_simplex_engine,
-    config::ConsensusConfig,
+    config::ConsensusConfig, start_simplex_engine, ConsensusMetrics, EngineConfig, ValidatorEntry,
+    ValidatorSet,
 };
 use allegro_primitives::Digest;
-use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
-use commonware_runtime::{Clock, Metrics, Runner, deterministic};
+use commonware_runtime::{deterministic, Clock, Metrics, Runner};
 use tracing::debug;
 
 /// Unlimited quota for simulated network (matching commonware's test pattern).
@@ -54,9 +54,7 @@ async fn advance_time(context: &deterministic::Context, total: Duration, step: D
 
 /// Build N validator keys and set.
 fn build_validators(n: usize) -> (Vec<PrivateKey>, ValidatorSet) {
-    let keys: Vec<PrivateKey> = (0..n)
-        .map(|i| PrivateKey::from_seed(i as u64))
-        .collect();
+    let keys: Vec<PrivateKey> = (0..n).map(|i| PrivateKey::from_seed(i as u64)).collect();
     let entries: Vec<ValidatorEntry> = (0..n)
         .map(|i| ValidatorEntry {
             public_key: keys[i].public_key(),
@@ -165,7 +163,9 @@ async fn start_engines(
 
     // Keep engines alive by leaking the handles (they live for the test duration)
     // Convert StartedEngine → Handle<()> for leaking
-    let _leak = Box::leak(Box::new(_handles.into_iter().map(|se| se.task).collect::<Vec<_>>()));
+    let _leak = Box::leak(Box::new(
+        _handles.into_iter().map(|se| se.task).collect::<Vec<_>>(),
+    ));
 
     proposal_logs
 }
@@ -199,7 +199,12 @@ fn test_three_validators_produce_blocks() {
     deterministic::Runner::default().start(|context| async move {
         let (keys, validator_set) = build_validators(n);
         let logs = start_engines(&context, &keys, &validator_set, &cfg).await;
-        advance_time(&context, Duration::from_secs(12), Duration::from_millis(100)).await;
+        advance_time(
+            &context,
+            Duration::from_secs(12),
+            Duration::from_millis(100),
+        )
+        .await;
 
         let total: usize = logs.iter().map(|l| l.lock().unwrap().len()).sum();
         debug!("3v: total proposals = {total}");
@@ -233,7 +238,12 @@ fn test_four_validators_produce_blocks() {
     deterministic::Runner::default().start(|context| async move {
         let (keys, validator_set) = build_validators(n);
         let logs = start_engines(&context, &keys, &validator_set, &cfg).await;
-        advance_time(&context, Duration::from_secs(15), Duration::from_millis(100)).await;
+        advance_time(
+            &context,
+            Duration::from_secs(15),
+            Duration::from_millis(100),
+        )
+        .await;
 
         let total: usize = logs.iter().map(|l| l.lock().unwrap().len()).sum();
         debug!("4v: total proposals = {total}");
@@ -292,7 +302,12 @@ fn test_proposals_are_unique_per_validator() {
     deterministic::Runner::default().start(|context| async move {
         let (keys, validator_set) = build_validators(3);
         let logs = start_engines(&context, &keys, &validator_set, &test_config()).await;
-        advance_time(&context, Duration::from_secs(10), Duration::from_millis(100)).await;
+        advance_time(
+            &context,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+        )
+        .await;
 
         for (i, log) in logs.iter().enumerate() {
             let proposals = log.lock().unwrap();
@@ -395,7 +410,12 @@ fn test_metrics_track_proposals() {
             _handles.push(started);
         }
 
-        advance_time(&context, Duration::from_secs(10), Duration::from_millis(100)).await;
+        advance_time(
+            &context,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+        )
+        .await;
 
         let proposed_v0 = metrics_v0.blocks_proposed();
         let proposed_v1 = metrics_v1.blocks_proposed();
@@ -413,7 +433,13 @@ fn test_metrics_track_proposals() {
         let log_v0 = per_validator_proposals[0].lock().unwrap().len() as u64;
         let log_v1 = per_validator_proposals[1].lock().unwrap().len() as u64;
 
-        assert!(proposed_v0 <= log_v0, "val0: metrics {proposed_v0} > log {log_v0}");
-        assert!(proposed_v1 <= log_v1, "val1: metrics {proposed_v1} > log {log_v1}");
+        assert!(
+            proposed_v0 <= log_v0,
+            "val0: metrics {proposed_v0} > log {log_v0}"
+        );
+        assert!(
+            proposed_v1 <= log_v1,
+            "val1: metrics {proposed_v1} > log {log_v1}"
+        );
     });
 }

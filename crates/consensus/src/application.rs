@@ -21,14 +21,14 @@ use std::time::SystemTime;
 
 use alloy_primitives::B256;
 use commonware_consensus::{
-    Automaton, CertifiableAutomaton,
     simplex::types::Context,
     simplex::Plan,
     types::{Epoch, Round, View},
+    Automaton, CertifiableAutomaton,
 };
-use commonware_cryptography::{Signer as _, ed25519::PublicKey};
+use commonware_cryptography::{ed25519::PublicKey, Signer as _};
 use commonware_utils::channel::oneshot;
-use futures::{SinkExt, StreamExt, channel::mpsc};
+use futures::{channel::mpsc, SinkExt, StreamExt};
 use tracing::{debug, error, info, warn};
 
 use allegro_primitives::Digest as AllegroDigest;
@@ -151,7 +151,13 @@ impl Automaton for Mailbox {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
-            .send(Genesis { epoch, response: tx }.into())
+            .send(
+                Genesis {
+                    epoch,
+                    response: tx,
+                }
+                .into(),
+            )
             .await
             .is_err()
         {
@@ -373,7 +379,11 @@ impl Actor {
             .await;
 
         let (block_bytes, block_hash, block_number) = match built {
-            Ok(payload) => (payload.block_bytes, payload.block_hash, payload.block_number),
+            Ok(payload) => (
+                payload.block_bytes,
+                payload.block_hash,
+                payload.block_number,
+            ),
             Err(e) => {
                 error!(error = %e, "payload builder failed");
                 if let Some(ref m) = self.metrics {

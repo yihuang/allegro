@@ -82,8 +82,8 @@ impl Default for ConsensusConfig {
             activity_timeout: 10,
             skip_timeout: 5,
             forwarding_policy: ForwardingPolicy::SilentVoters,
-            replay_buffer_size: 8 * 1024 * 1024,    // 8 MB
-            write_buffer_size: 1024 * 1024,          // 1 MB
+            replay_buffer_size: 8 * 1024 * 1024, // 8 MB
+            write_buffer_size: 1024 * 1024,      // 1 MB
             page_cache_pages: 4096,
             page_cache_capacity: 8192,
             partition: "allegro".into(),

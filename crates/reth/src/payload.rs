@@ -45,9 +45,7 @@
 //! ```
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{
-    ForkchoiceState, PayloadAttributes,
-};
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
 
 #[cfg(test)]
 mod tests {
@@ -101,7 +99,10 @@ where
     BuildFn: Fn(
             BuildPayloadRequest,
         ) -> Pin<
-            Box<dyn Future<Output = Result<allegro_consensus::executor::BuiltPayload, String>> + Send>,
+            Box<
+                dyn Future<Output = Result<allegro_consensus::executor::BuiltPayload, String>>
+                    + Send,
+            >,
         > + Send
         + Sync
         + 'static,
@@ -142,10 +143,7 @@ pub fn build_payload_attributes_from_request(
 /// - `withdrawals: Some(vec![])` for Shanghai+
 /// - `parent_beacon_block_root: Some(ZERO)` for Cancun+
 /// - `slot_number: None` / `target_gas_limit: None` since Amsterdam not activated.
-pub fn build_payload_attributes(
-    _parent_hash: B256,
-    timestamp: u64,
-) -> PayloadAttributes {
+pub fn build_payload_attributes(_parent_hash: B256, timestamp: u64) -> PayloadAttributes {
     PayloadAttributes {
         timestamp,
         prev_randao: B256::ZERO,
@@ -156,5 +154,3 @@ pub fn build_payload_attributes(
         target_gas_limit: None,
     }
 }
-
-

@@ -27,7 +27,7 @@ pub mod metrics;
 pub(crate) mod validators;
 
 pub use block::Block;
-pub use engine::{EngineConfig, StartedEngine, start_simplex_engine};
+pub use engine::{start_simplex_engine, EngineConfig, StartedEngine};
 pub use error::ConsensusError;
 pub use executor::{
     build_empty_block_internal, BlockMeta, BuildPayloadRequest, BuiltPayload,

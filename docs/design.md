@@ -96,8 +96,11 @@ crates/
 │   ├── finalizer.rs          Finalization → forkchoice forwarder
 │   └── chainspec.rs          DEV chainspec
 │
-└── bin/allegro/
-    └── main.rs               CLI, dual-runtime orchestration
+├── bin/allegro/
+│   └── main.rs               CLI, dual-runtime orchestration
+│
+└── xtask/
+    └── main.rs               Genesis generation (Anvil mnemonic, all forks at 0)
 ```
 
 ### Dependency graph
@@ -557,7 +560,7 @@ unclean termination is acceptable for the current development phase.
 | In-memory `BlockInfoMap` | Lost on restart; parent lookups fail → consensus stalls | v2: persist or rebuild from marshal journal |
 | 1 block/second max rate | Simplex can propose faster than timestamp rule allows | Acceptable; v2: millisecond timestamps via custom payload attributes (like Tempo) |
 | Tracing subscriber conflict | Consensus engine logs sometimes not captured in devnet script | Investigate reth tracing initialisation order |
-| xtask genesis not consumed | Binary always uses `reth_chainspec::DEV` | v2: read custom `genesis.json` |
+| Binary uses hardcoded DEV chainspec | `xtask genesis` output not yet wired into the binary | v2: `--genesis` flag reads xtask JSON |
 
 ---
 
@@ -649,7 +652,47 @@ allegro --execution <reth|stub>     # default: reth
 
 ---
 
-## 10. Devnet Quickstart
+## 10. Devnet Genesis Generator (`xtask`)
+
+The `allegro-xtask` crate generates devnet artefacts for a local N-validator
+network:
+
+```bash
+cargo run -p allegro-xtask -- genesis \
+    --validators 4 \
+    --base-port 13000 \
+    --chain-id 1337 \
+    --output ./devnet
+```
+
+### Output files
+
+| File | Contents |
+|------|----------|
+| `genesis.json` | Full `alloy_genesis::Genesis` with `ChainConfig`, alloc, nonce |
+| `validators.json` | Per-validator index, Ed25519 public key, p2p address |
+| `node-{i}/key` | Seed hex (`0x0000000000000000`..) matching simplex `from_seed(i)` |
+
+### Genesis configuration
+
+- **Chain ID** — configurable (default 1337).
+- **Funded accounts** — 20 accounts derived from the Anvil mnemonic
+  (`"test test … junk"`) via BIP-44 `m/44'/60'/0'/0/{i}`, each with 10 000 ETH.
+  This matches `cast` / forge defaults.
+- **Hard forks** — all block-number forks at `0`, Paris TTD = 0,
+  Shanghai/Cancun/Prague/Osaka at timestamp 0.  Amsterdam NOT activated.
+- **Gas limit** — 30 000 000.
+
+### Validator keys
+
+Validators use Ed25519 keys derived from `PrivateKey::from_seed(i as u64)`,
+which is exactly what the allegro binary does when given `--node <i>`.
+The xtask key files and the binary's key derivation are **deterministically
+identical** — no key material needs to be shared.
+
+---
+
+## 11. Devnet Quickstart
 
 ```bash
 # Build and run a 2-node devnet
@@ -669,7 +712,7 @@ cast block-number --rpc-url http://127.0.0.1:8545
 
 ---
 
-## 11. Future Work
+## 12. Future Work
 
 - **Block backfill / syncer**: nodes that miss block verification should fetch
   blocks from peers and call `new_payload` retroactively.

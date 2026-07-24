@@ -10,14 +10,11 @@
 
 use std::time::{Duration, SystemTime};
 
-use allegro_consensus::{
-    PayloadBuilder,
-    executor::{ValidationResult},
-};
+use allegro_consensus::{executor::ValidationResult, PayloadBuilder};
 use allegro_node::{
-    builder::{ForkchoiceTracker, create_engine_payload_builder},
+    builder::{create_engine_payload_builder, ForkchoiceTracker},
     chainspec::dev_chainspec,
-    launch::{RethNodeConfig, launch},
+    launch::{launch, RethNodeConfig},
 };
 use allegro_primitives::Digest as AllegroDigest;
 use alloy_rpc_types_engine::ForkchoiceState;
@@ -32,7 +29,10 @@ fn free_port() -> u16 {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -84,7 +84,10 @@ async fn build_validate_finalize_first_block() {
     .await
     .expect("build_payload timed out")
     .expect("build_payload failed");
-    eprintln!("built block 1: {} ({})", built.block_number, built.block_hash);
+    eprintln!(
+        "built block 1: {} ({})",
+        built.block_number, built.block_hash
+    );
     assert_eq!(built.block_number, 1);
     assert_ne!(built.block_hash, alloy_primitives::B256::ZERO);
 
@@ -118,7 +121,11 @@ async fn build_validate_finalize_first_block() {
     .await
     .expect("finalization FCU timed out")
     .expect("finalization FCU failed");
-    assert!(fcu.payload_status.is_valid(), "finalization FCU not valid: {}", fcu.payload_status);
+    assert!(
+        fcu.payload_status.is_valid(),
+        "finalization FCU not valid: {}",
+        fcu.payload_status
+    );
     tracker.set_finalized(built.block_hash, built.block_number);
     eprintln!("finalized block 1");
 
@@ -140,6 +147,9 @@ async fn build_validate_finalize_first_block() {
     .await
     .expect("build_payload #2 timed out")
     .expect("build_payload #2 failed");
-    eprintln!("built block 2: {} ({})", built2.block_number, built2.block_hash);
+    eprintln!(
+        "built block 2: {} ({})",
+        built2.block_number, built2.block_hash
+    );
     assert_eq!(built2.block_number, 2);
 }

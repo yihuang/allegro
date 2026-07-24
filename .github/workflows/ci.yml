@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  ALLEGRO_LOG_LEVEL: warn
+
+jobs:
+  # ── Check compilation with caching ────────────────────────
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-directories: ~/.cargo/git
+
+      - name: Check workspace
+        run: cargo check --workspace --locked
+
+  # ── Tests (unit + integration + process e2e) ──────────────
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-directories: ~/.cargo/git
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Foundry (for cast in e2e)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run tests
+        run: cargo test --workspace -- --test-threads=2
+
+  # ── Formatting ───────────────────────────────────────────
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  # ── Clippy ───────────────────────────────────────────────
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-directories: ~/.cargo/git
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
