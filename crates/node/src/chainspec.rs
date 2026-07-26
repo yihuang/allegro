@@ -60,7 +60,7 @@ pub fn load_chain_with_validators(
     let validators = value
         .as_object_mut()
         .and_then(|obj| obj.remove("validators"))
-        .map(|v| serde_json::from_value::<Vec<ValidatorFileEntry>>(v))
+        .map(serde_json::from_value::<Vec<ValidatorFileEntry>>)
         .transpose()
         .map_err(|e| eyre::eyre!("parse validators in genesis {}: {e}", path.display()))?;
 
