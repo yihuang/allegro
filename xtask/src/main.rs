@@ -154,14 +154,20 @@ impl GenesisCmd {
         let genesis_path = output.join("genesis.json");
         let mut genesis_value = serde_json::to_value(&genesis).wrap_err("serialize genesis")?;
         // Inject validators as a top-level field
-        let validators_value = serde_json::to_value(&validators).wrap_err("serialize validators")?;
+        let validators_value =
+            serde_json::to_value(&validators).wrap_err("serialize validators")?;
         if let Some(obj) = genesis_value.as_object_mut() {
             obj.insert("validators".to_string(), validators_value);
         }
-        let genesis_json = serde_json::to_string_pretty(&genesis_value).wrap_err("pretty genesis")?;
+        let genesis_json =
+            serde_json::to_string_pretty(&genesis_value).wrap_err("pretty genesis")?;
         std::fs::write(&genesis_path, &genesis_json)
             .wrap_err_with(|| format!("write {}", genesis_path.display()))?;
-        println!("wrote genesis (with {} validators) to {}", validators.len(), genesis_path.display());
+        println!(
+            "wrote genesis (with {} validators) to {}",
+            validators.len(),
+            genesis_path.display()
+        );
 
         // Also write a standalone validators.json for reference / backward compat
         let val_path = output.join("validators.json");
@@ -232,7 +238,8 @@ mod tests {
 
         // 2) Validators should be embedded at the top level
         let value: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let validators = value.as_object()
+        let validators = value
+            .as_object()
             .and_then(|obj| obj.get("validators"))
             .and_then(|v| v.as_array())
             .expect("genesis.json should have a top-level 'validators' array");

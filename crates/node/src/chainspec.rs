@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use alloy_genesis::Genesis;
 use allegro_consensus::{ValidatorEntry, ValidatorSet};
+use alloy_genesis::Genesis;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::ed25519::PublicKey;
 use reth_chainspec::ChainSpec;
@@ -47,7 +47,9 @@ struct ValidatorFileEntry {
 ///
 /// This is the single entry-point for `--genesis` loading; the binary calls this
 /// and then uses the returned validators (or falls back to `--peer` derivation).
-pub fn load_chain_with_validators(path: &Path) -> eyre::Result<(Arc<ChainSpec>, Option<ValidatorSet>)> {
+pub fn load_chain_with_validators(
+    path: &Path,
+) -> eyre::Result<(Arc<ChainSpec>, Option<ValidatorSet>)> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| eyre::eyre!("read genesis file {}: {e}", path.display()))?;
 
@@ -55,7 +57,8 @@ pub fn load_chain_with_validators(path: &Path) -> eyre::Result<(Arc<ChainSpec>, 
     let mut value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| eyre::eyre!("parse genesis JSON {}: {e}", path.display()))?;
 
-    let validators = value.as_object_mut()
+    let validators = value
+        .as_object_mut()
         .and_then(|obj| obj.remove("validators"))
         .map(|v| serde_json::from_value::<Vec<ValidatorFileEntry>>(v))
         .transpose()
@@ -78,10 +81,7 @@ pub fn load_chain_with_validators(path: &Path) -> eyre::Result<(Arc<ChainSpec>, 
                     )
                 });
                 let pk = PublicKey::decode(pk_bytes.as_ref()).unwrap_or_else(|err| {
-                    panic!(
-                        "invalid public_key bytes for validator {}: {err}",
-                        e.index
-                    )
+                    panic!("invalid public_key bytes for validator {}: {err}", e.index)
                 });
                 let ingress: SocketAddr = e.ingress.parse().unwrap_or_else(|_| {
                     panic!(
