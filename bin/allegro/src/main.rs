@@ -27,6 +27,7 @@ use commonware_p2p::authenticated::lookup;
 use commonware_p2p::AddressableManager;
 use commonware_runtime::{Clock, Metrics, Runner};
 use commonware_utils::{ordered::Map, NZUsize};
+use reth_chainspec::ChainSpec;
 use tracing::info;
 use tracing_subscriber::filter::EnvFilter;
 
@@ -171,7 +172,15 @@ fn init_tracing(cli: &Cli) {
 //  SHARED HELPERS
 // ════════════════════════════════════════════════════════════
 
-fn build_validator_set(cli: &Cli) -> ValidatorSet {
+fn build_validator_set(cli: &Cli, genesis_validators: Option<ValidatorSet>) -> ValidatorSet {
+    // Priority 1: validators embedded in genesis.json
+    if let Some(vs) = genesis_validators {
+        info!("using {} validators from genesis.json", vs.len());
+        return vs;
+    }
+
+    // Priority 2: derive validator set from --node and --peer CLI args.
+    // NOTE: this only works correctly when ALL peers are provided.
     let num_validators = 1 + cli.peers.len() as u8;
     let my_index = cli.node as usize;
     let entries: Vec<ValidatorEntry> = (0..num_validators)
@@ -190,7 +199,24 @@ fn build_validator_set(cli: &Cli) -> ValidatorSet {
             }
         })
         .collect();
-    ValidatorSet::from_entries(&entries)
+    let vs = ValidatorSet::from_entries(&entries);
+    info!(
+        "derived {} validators from --node/--peer (no genesis validators)",
+        vs.len()
+    );
+    vs
+}
+
+/// Load genesis and optionally embedded validators.
+///
+/// Returns `(ChainSpec, Option<ValidatorSet>)`.
+/// If `--genesis` is not set, returns the dev chainspec with no validators.
+fn load_genesis(cli: &Cli) -> (Arc<ChainSpec>, Option<ValidatorSet>) {
+    match &cli.genesis {
+        Some(path) => allegro_node::chainspec::load_chain_with_validators(path)
+            .unwrap_or_else(|e| panic!("failed to load genesis {}: {e}", path.display())),
+        None => (allegro_node::chainspec::dev_chainspec(), None),
+    }
 }
 
 fn build_consensus_config(cli: &Cli) -> ConsensusConfig {
@@ -281,7 +307,8 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
     let pk = sk.public_key();
     info!(node = cli.node, listen = %cli.listen, peers = ?cli.peers, "starting allegro node (stub)");
 
-    let validators = build_validator_set(&cli);
+    let (_chain_spec, genesis_validators) = load_genesis(&cli);
+    let validators = build_validator_set(&cli, genesis_validators);
     let consensus_config = build_consensus_config(&cli);
 
     let runner = commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
@@ -346,7 +373,9 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
     let pk = sk.public_key();
     info!(node = cli.node, listen = %cli.listen, peers = ?cli.peers, "starting allegro node (reth)");
 
-    let validators = build_validator_set(&cli);
+    // Load genesis + validators early (before spawning threads)
+    let (chain_spec, genesis_validators) = load_genesis(&cli);
+    let validators = build_validator_set(&cli, genesis_validators);
     let consensus_config = build_consensus_config(&cli);
 
     // ── Channel: reth thread → consensus thread ──
@@ -471,18 +500,12 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join(format!("allegro-reth-{}", cli.node)));
 
-        let chain = match &cli.genesis {
-            Some(path) => allegro_node::chainspec::chain_spec_from_genesis_json(path)
-                .expect("failed to load genesis"),
-            None => allegro_node::chainspec::dev_chainspec(),
-        };
-
         let cfg = allegro_node::launch::RethNodeConfig {
             datadir,
             http_port: cli.rpc_port,
             authrpc_port: cli.authrpc_port,
             p2p_port: cli.reth_p2p_port,
-            chain,
+            chain: chain_spec,
         };
 
         let launched = allegro_node::launch::launch(cfg, task_executor)

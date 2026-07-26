@@ -53,6 +53,7 @@ struct GenesisCmd {
 // ── Output types ───────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ValidatorOutput {
     index: u16,
     public_key: String,
@@ -93,13 +94,11 @@ impl GenesisCmd {
                 .wrap_err_with(|| format!("derive account {i} from mnemonic"))?;
 
             let addr: Address = signer.address();
-            let secret: B256 = signer.to_bytes();
 
             alloc.insert(
                 addr,
                 GenesisAccount {
                     balance: U256::from(10_000_000_000_000_000_000_000u128), // 10_000 ETH
-                    private_key: Some(secret),
                     ..Default::default()
                 },
             );
@@ -151,25 +150,32 @@ impl GenesisCmd {
             parent_hash: None,
         };
 
-        // ── Write output files ──
+        // ── Write genesis.json with validators embedded ──
         let genesis_path = output.join("genesis.json");
-        let genesis_json = serde_json::to_string_pretty(&genesis).wrap_err("serialize genesis")?;
+        let mut genesis_value = serde_json::to_value(&genesis).wrap_err("serialize genesis")?;
+        // Inject validators as a top-level field
+        let validators_value = serde_json::to_value(&validators).wrap_err("serialize validators")?;
+        if let Some(obj) = genesis_value.as_object_mut() {
+            obj.insert("validators".to_string(), validators_value);
+        }
+        let genesis_json = serde_json::to_string_pretty(&genesis_value).wrap_err("pretty genesis")?;
         std::fs::write(&genesis_path, &genesis_json)
             .wrap_err_with(|| format!("write {}", genesis_path.display()))?;
-        println!("wrote genesis to {}", genesis_path.display());
+        println!("wrote genesis (with {} validators) to {}", validators.len(), genesis_path.display());
 
+        // Also write a standalone validators.json for reference / backward compat
         let val_path = output.join("validators.json");
         let val_json =
             serde_json::to_string_pretty(&validators).wrap_err("serialize validators")?;
         std::fs::write(&val_path, &val_json)
             .wrap_err_with(|| format!("write {}", val_path.display()))?;
         println!(
-            "wrote {} validators to {}",
+            "wrote {} validators to {} (reference)",
             validators.len(),
             val_path.display()
         );
 
-        // Per-node key files
+        // Per-node key files -- each node-"dir" gets a "key" file with its seed
         for v in &validators {
             let node_dir = output.join(format!("node-{}", v.index));
             std::fs::create_dir_all(&node_dir)
@@ -181,7 +187,7 @@ impl GenesisCmd {
         }
 
         println!();
-        println!("To start a node:");
+        println!("To start a node (validators are embedded in genesis.json):");
         for v in &validators {
             let peer_args: String = validators
                 .iter()
@@ -217,10 +223,32 @@ mod tests {
         };
         cmd.run().unwrap();
         let content = std::fs::read_to_string(dir.path().join("genesis.json")).unwrap();
+
+        // 1) Standard Genesis fields should parse correctly
         let genesis: Genesis = serde_json::from_str(&content).unwrap();
         assert_eq!(genesis.config.chain_id, 1337);
         assert!(genesis.config.shanghai_time == Some(0));
         assert_eq!(genesis.alloc.len(), PREFUND_COUNT as usize);
+
+        // 2) Validators should be embedded at the top level
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let validators = value.as_object()
+            .and_then(|obj| obj.get("validators"))
+            .and_then(|v| v.as_array())
+            .expect("genesis.json should have a top-level 'validators' array");
+        assert_eq!(validators.len(), 2, "should have 2 validators");
+        assert!(
+            validators[0].as_object().unwrap().contains_key("publicKey"),
+            "validator entry should have publicKey"
+        );
+        assert!(
+            validators[0].as_object().unwrap().contains_key("ingress"),
+            "validator entry should have ingress"
+        );
+        assert!(
+            validators[0].as_object().unwrap().contains_key("egress"),
+            "validator entry should have egress"
+        );
     }
 
     #[test]
