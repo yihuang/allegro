@@ -70,34 +70,26 @@ pub fn load_chain_with_validators(
 
     let chain_spec = Arc::new(ChainSpec::from_genesis(genesis));
 
-    let validator_set = validators.map(|entries| {
-        let entries: Vec<ValidatorEntry> = entries
-            .iter()
-            .map(|e| {
-                let pk_bytes = hex::decode(&e.public_key).unwrap_or_else(|_| {
-                    panic!(
-                        "invalid hex public_key for validator {}: {}",
-                        e.index, e.public_key
-                    )
-                });
-                let pk = PublicKey::decode(pk_bytes.as_ref()).unwrap_or_else(|err| {
-                    panic!("invalid public_key bytes for validator {}: {err}", e.index)
-                });
-                let ingress: SocketAddr = e.ingress.parse().unwrap_or_else(|_| {
-                    panic!(
-                        "invalid ingress address for validator {}: {}",
-                        e.index, e.ingress
-                    )
-                });
-                ValidatorEntry {
-                    public_key: pk,
-                    ingress,
-                    egress: ingress.ip(),
-                }
-            })
-            .collect();
-        ValidatorSet::from_entries(&entries)
-    });
+    let validator_set = match validators {
+        Some(entries) => {
+            let entries: Vec<ValidatorEntry> = entries
+                .iter()
+                .map(|e| -> eyre::Result<ValidatorEntry> {
+                    let pk_bytes = hex::decode(&e.public_key)?;
+                    let pk = PublicKey::decode(pk_bytes.as_ref())?;
+                    let ingress: SocketAddr = e.ingress.parse()?;
+                    Ok(ValidatorEntry {
+                        public_key: pk,
+                        ingress,
+                        egress: ingress.ip(),
+                    })
+                })
+                .collect::<eyre::Result<Vec<_>>>()
+                .map_err(|e| eyre::eyre!("build validator entries: {e}"))?;
+            Some(ValidatorSet::from_entries(&entries))
+        }
+        None => None,
+    };
 
     Ok((chain_spec, validator_set))
 }
