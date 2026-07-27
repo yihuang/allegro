@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use allegro_consensus::{
     config::{ConsensusConfig, ForwardingPolicy},
-    start_simplex_engine, ConsensusMetrics, EngineConfig, ValidatorSet,
+    start_simplex_engine, ConsensusMetrics, EngineConfig, ValidatorEntry, ValidatorSet,
 };
 use clap::{Parser, ValueEnum};
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
@@ -186,6 +186,43 @@ fn load_genesis(cli: &Cli) -> eyre::Result<(Arc<ChainSpec>, ValidatorSet)> {
     }
 }
 
+/// Use genesis validators if present, otherwise derive a devnet set from
+/// `--node`/`--peer` (correct only when all peers are provided).
+fn build_validator_set(cli: &Cli, genesis_validators: ValidatorSet) -> ValidatorSet {
+    if !genesis_validators.is_empty() {
+        info!(
+            "using {} validators from genesis",
+            genesis_validators.len()
+        );
+        return genesis_validators;
+    }
+
+    let num_validators = 1 + cli.peers.len() as u8;
+    let my_index = cli.node as usize;
+    let entries: Vec<ValidatorEntry> = (0..num_validators)
+        .map(|i| {
+            let addr = if i as usize == my_index {
+                cli.listen
+            } else if (i as usize) < my_index {
+                cli.peers[i as usize]
+            } else {
+                cli.peers[(i as usize) - 1]
+            };
+            ValidatorEntry {
+                public_key: PrivateKey::from_seed(i as u64).public_key(),
+                ingress: addr,
+                egress: addr.ip(),
+            }
+        })
+        .collect();
+    let vs = ValidatorSet::from_entries(&entries);
+    info!(
+        "derived {} validators from --node/--peer (no genesis validators)",
+        vs.len()
+    );
+    vs
+}
+
 fn build_consensus_config(cli: &Cli) -> ConsensusConfig {
     ConsensusConfig {
         mailbox_size: cli.mailbox_size,
@@ -272,7 +309,8 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
     let pk = sk.public_key();
     info!(node = cli.node, listen = %cli.listen, peers = ?cli.peers, "starting allegro node (stub)");
 
-    let (_chain_spec, validators) = load_genesis(&cli)?;
+    let (_chain_spec, genesis_validators) = load_genesis(&cli)?;
+    let validators = build_validator_set(&cli, genesis_validators);
     let consensus_config = build_consensus_config(&cli);
 
     let runner = commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
@@ -343,7 +381,8 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
     info!(node = cli.node, listen = %cli.listen, peers = ?cli.peers, "starting allegro node (reth)");
 
     // Load genesis + validators early (before spawning threads)
-    let (chain_spec, validators) = load_genesis(&cli)?;
+    let (chain_spec, genesis_validators) = load_genesis(&cli)?;
+    let validators = build_validator_set(&cli, genesis_validators);
     let consensus_config = build_consensus_config(&cli);
 
     // ── Channel: reth thread → consensus thread ──
