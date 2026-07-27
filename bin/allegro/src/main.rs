@@ -179,7 +179,10 @@ fn init_tracing(cli: &Cli) {
 fn load_genesis(cli: &Cli) -> eyre::Result<(Arc<ChainSpec>, ValidatorSet)> {
     match &cli.genesis {
         Some(path) => allegro_node::chainspec::load_chain_with_validators(path),
-        None => Ok((allegro_node::chainspec::dev_chainspec(), ValidatorSet::new())),
+        None => Ok((
+            allegro_node::chainspec::dev_chainspec(),
+            ValidatorSet::new(),
+        )),
     }
 }
 
@@ -279,11 +282,8 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
             context.with_label("p2p"),
             dev_lookup_config(&cli, sk.clone()),
         );
-        let q = |n| {
-            commonware_runtime::Quota::per_second(
-                std::num::NonZeroU32::new(n).expect("nz"),
-            )
-        };
+        let q =
+            |n| commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"));
         let votes = network.register(0, q(128), cli.mailbox_size);
         let certs = network.register(1, q(128), cli.mailbox_size);
         let resolver = network.register(2, q(128), cli.mailbox_size);
@@ -387,9 +387,7 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                     dev_lookup_config(&c_cli, c_sk.clone()),
                 );
                 let q = |n| {
-                    commonware_runtime::Quota::per_second(
-                        std::num::NonZeroU32::new(n).expect("nz"),
-                    )
+                    commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"))
                 };
                 let votes = network.register(0, q(128), c_cli.mailbox_size);
                 let certs = network.register(1, q(128), c_cli.mailbox_size);
