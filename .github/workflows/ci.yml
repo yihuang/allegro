@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: write # sccache-action saves to the GitHub Actions cache
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -49,6 +50,7 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+      actions: write # sccache-action + upload-artifact write to the Actions cache/artifact store
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -90,6 +92,7 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+      actions: read # download-artifact reads the archive uploaded by build-test-archive
     strategy:
       fail-fast: false
       matrix:
@@ -148,6 +151,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: write # sccache-action saves to the GitHub Actions cache
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -171,7 +175,8 @@ jobs:
     name: ci success
     runs-on: ubuntu-latest
     if: always()
-    permissions: {}
+    permissions:
+      actions: read # alls-green reads job status via the Actions API
     needs:
       - check
       - test
