@@ -39,17 +39,14 @@ struct ValidatorFileEntry {
     ingress: String,
 }
 
-/// Load chain spec and optionally embedded validators from a genesis JSON file.
+/// Load chain spec and embedded validators from a genesis JSON file.
 ///
 /// The file can be either:
 /// - **New format**: an `AllegroGenesis` with a top-level `"validators"` array
-/// - **Old format**: a plain `Genesis` (validators will be `None`)
+/// - **Old format**: a plain `Genesis` (validators will be empty)
 ///
-/// This is the single entry-point for `--genesis` loading; the binary calls this
-/// and then uses the returned validators (or falls back to `--peer` derivation).
-pub fn load_chain_with_validators(
-    path: &Path,
-) -> eyre::Result<(Arc<ChainSpec>, Option<ValidatorSet>)> {
+/// This is the single entry-point for `--genesis` loading.
+pub fn load_chain_with_validators(path: &Path) -> eyre::Result<(Arc<ChainSpec>, ValidatorSet)> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| eyre::eyre!("read genesis file {}: {e}", path.display()))?;
 
@@ -86,9 +83,9 @@ pub fn load_chain_with_validators(
                 })
                 .collect::<eyre::Result<Vec<_>>>()
                 .map_err(|e| eyre::eyre!("build validator entries: {e}"))?;
-            Some(ValidatorSet::from_entries(&entries))
+            ValidatorSet::from_entries(&entries)
         }
-        None => None,
+        None => ValidatorSet::new(),
     };
 
     Ok((chain_spec, validator_set))
