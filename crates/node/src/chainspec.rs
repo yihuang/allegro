@@ -33,10 +33,10 @@ pub fn chain_spec_from_genesis_json(path: &Path) -> eyre::Result<Arc<ChainSpec>>
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ValidatorFileEntry {
-    #[allow(dead_code)]
     index: u16,
     public_key: String,
     ingress: String,
+    egress: String,
 }
 
 /// Load chain spec and embedded validators from a genesis JSON file.
@@ -67,23 +67,47 @@ pub fn load_chain_with_validators(path: &Path) -> eyre::Result<(Arc<ChainSpec>, 
 
     let chain_spec = Arc::new(ChainSpec::from_genesis(genesis));
 
+    // Parse the file entries into a `ValidatorSet`, erroring on any malformed field.
     let validator_set = match validators {
         Some(entries) => {
-            let entries: Vec<ValidatorEntry> = entries
-                .iter()
-                .map(|e| -> eyre::Result<ValidatorEntry> {
-                    let pk_bytes = hex::decode(&e.public_key)?;
-                    let pk = PublicKey::decode(pk_bytes.as_ref())?;
-                    let ingress: SocketAddr = e.ingress.parse()?;
-                    Ok(ValidatorEntry {
-                        public_key: pk,
-                        ingress,
-                        egress: ingress.ip(),
-                    })
-                })
-                .collect::<eyre::Result<Vec<_>>>()
-                .map_err(|e| eyre::eyre!("build validator entries: {e}"))?;
-            ValidatorSet::from_entries(&entries)
+            let mut parsed = Vec::with_capacity(entries.len());
+            for e in &entries {
+                let pk_bytes = hex::decode(&e.public_key).map_err(|_| {
+                    eyre::eyre!(
+                        "invalid hex public_key for validator {}: {}",
+                        e.index,
+                        e.public_key
+                    )
+                })?;
+                let public_key = PublicKey::decode(pk_bytes.as_ref()).map_err(|err| {
+                    eyre::eyre!("invalid public_key bytes for validator {}: {err}", e.index)
+                })?;
+                let ingress: SocketAddr = e.ingress.parse().map_err(|_| {
+                    eyre::eyre!(
+                        "invalid ingress address for validator {}: {}",
+                        e.index,
+                        e.ingress
+                    )
+                })?;
+                // File stores egress as a `SocketAddr`, keep only the IP.
+                let egress = e
+                    .egress
+                    .parse::<SocketAddr>()
+                    .map(|addr| addr.ip())
+                    .map_err(|_| {
+                        eyre::eyre!(
+                            "invalid egress address for validator {}: {}",
+                            e.index,
+                            e.egress
+                        )
+                    })?;
+                parsed.push(ValidatorEntry {
+                    public_key,
+                    ingress,
+                    egress,
+                });
+            }
+            ValidatorSet::from_entries(&parsed)
         }
         None => ValidatorSet::new(),
     };
