@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use allegro_consensus::{
     config::{ConsensusConfig, ForwardingPolicy},
-    start_simplex_engine, ConsensusMetrics, EngineConfig, ValidatorEntry, ValidatorSet,
+    start_simplex_engine, ConsensusMetrics, EngineConfig, ValidatorSet,
 };
 use clap::{Parser, ValueEnum};
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
@@ -28,7 +28,7 @@ use commonware_p2p::AddressableManager;
 use commonware_runtime::{Clock, Metrics, Runner};
 use commonware_utils::{ordered::Map, NZUsize};
 use reth_chainspec::ChainSpec;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::filter::EnvFilter;
 
 // ── CLI ─────────────────────────────────────────────────────
@@ -172,41 +172,6 @@ fn init_tracing(cli: &Cli) {
 //  SHARED HELPERS
 // ════════════════════════════════════════════════════════════
 
-fn build_validator_set(cli: &Cli, genesis_validators: Option<ValidatorSet>) -> ValidatorSet {
-    // Priority 1: validators embedded in genesis.json
-    if let Some(vs) = genesis_validators {
-        info!("using {} validators from genesis.json", vs.len());
-        return vs;
-    }
-
-    // Priority 2: derive validator set from --node and --peer CLI args.
-    // NOTE: this only works correctly when ALL peers are provided.
-    let num_validators = 1 + cli.peers.len() as u8;
-    let my_index = cli.node as usize;
-    let entries: Vec<ValidatorEntry> = (0..num_validators)
-        .map(|i| {
-            let addr = if i as usize == my_index {
-                cli.listen
-            } else if (i as usize) < my_index {
-                cli.peers[i as usize]
-            } else {
-                cli.peers[(i as usize) - 1]
-            };
-            ValidatorEntry {
-                public_key: PrivateKey::from_seed(i as u64).public_key(),
-                ingress: addr,
-                egress: addr.ip(),
-            }
-        })
-        .collect();
-    let vs = ValidatorSet::from_entries(&entries);
-    info!(
-        "derived {} validators from --node/--peer (no genesis validators)",
-        vs.len()
-    );
-    vs
-}
-
 /// Load genesis and optionally embedded validators.
 ///
 /// Returns `(ChainSpec, Option<ValidatorSet>)`.
@@ -308,7 +273,10 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
     info!(node = cli.node, listen = %cli.listen, peers = ?cli.peers, "starting allegro node (stub)");
 
     let (_chain_spec, genesis_validators) = load_genesis(&cli);
-    let validators = build_validator_set(&cli, genesis_validators);
+    let validators = genesis_validators.unwrap_or_else(|| {
+        warn!("no genesis validators; consensus will be unavailable");
+        ValidatorSet::new()
+    });
     let consensus_config = build_consensus_config(&cli);
 
     let runner = commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
@@ -375,7 +343,10 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
 
     // Load genesis + validators early (before spawning threads)
     let (chain_spec, genesis_validators) = load_genesis(&cli);
-    let validators = build_validator_set(&cli, genesis_validators);
+    let validators = genesis_validators.unwrap_or_else(|| {
+        warn!("no genesis validators; consensus will be unavailable");
+        ValidatorSet::new()
+    });
     let consensus_config = build_consensus_config(&cli);
 
     // ── Channel: reth thread → consensus thread ──
