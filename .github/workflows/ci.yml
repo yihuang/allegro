@@ -54,6 +54,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          docker system prune -af --volumes || true
+          df -h
+
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
@@ -77,7 +84,7 @@ jobs:
 
   # Run tests from the prebuilt archive, split across partitions.
   test:
-    name: test (${{ matrix.partition }}/2)
+    name: test (${{ matrix.partition }}/${{ strategy.job-total }})
     needs: build-test-archive
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -113,7 +120,7 @@ jobs:
           name: nextest-archive
 
       - name: Run tests
-        run: cargo nextest run --profile ci --archive-file nextest-archive.tar.zst --workspace-remap . --partition count:${{ matrix.partition }}/2
+        run: cargo nextest run --profile ci --archive-file nextest-archive.tar.zst --workspace-remap . --partition count:${{ matrix.partition }}/${{ strategy.job-total }}
 
   # Check formatting.
   fmt:
