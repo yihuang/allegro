@@ -90,6 +90,8 @@ jobs:
     needs: build-test-archive
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      RUSTC_WRAPPER: ""
     permissions:
       contents: read
       actions: read # download-artifact reads the archive uploaded by build-test-archive
