@@ -1,10 +1,15 @@
 //! Chainspec helpers for the Allegro devnet.
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use allegro_consensus::{ValidatorEntry, ValidatorSet};
 use alloy_genesis::Genesis;
+use commonware_codec::DecodeExt;
+use commonware_cryptography::ed25519::PublicKey;
 use reth_chainspec::ChainSpec;
+use serde::Deserialize;
 
 /// Return the DEV chainspec, which activates all hardforks through Osaka at genesis
 /// and includes 20 prefunded accounts derived from the "test test test ... junk" mnemonic.
@@ -18,11 +23,96 @@ pub fn dev_chainspec() -> Arc<ChainSpec> {
 ///
 /// The JSON should match the format produced by `allegro-xtask genesis`.
 pub fn chain_spec_from_genesis_json(path: &Path) -> eyre::Result<Arc<ChainSpec>> {
+    let (spec, _) = load_chain_with_validators(path)?;
+    Ok(spec)
+}
+
+// ── Validator-file entry (matches xtask output) ─────────────
+
+/// A single validator entry in the validators.json / genesis.json format.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ValidatorFileEntry {
+    index: u16,
+    public_key: String,
+    ingress: String,
+    egress: String,
+}
+
+/// Load chain spec and embedded validators from a genesis JSON file.
+///
+/// The file can be either:
+/// - **New format**: an `AllegroGenesis` with a top-level `"validators"` array
+/// - **Old format**: a plain `Genesis` (validators will be empty)
+///
+/// This is the single entry-point for `--genesis` loading.
+pub fn load_chain_with_validators(path: &Path) -> eyre::Result<(Arc<ChainSpec>, ValidatorSet)> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| eyre::eyre!("read genesis file {}: {e}", path.display()))?;
-    let genesis: Genesis = serde_json::from_str(&content)
+
+    // Parse as generic JSON, extract "validators" if present
+    let mut value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| eyre::eyre!("parse genesis JSON {}: {e}", path.display()))?;
-    Ok(Arc::new(ChainSpec::from_genesis(genesis)))
+
+    let validators = value
+        .as_object_mut()
+        .and_then(|obj| obj.remove("validators"))
+        .map(serde_json::from_value::<Vec<ValidatorFileEntry>>)
+        .transpose()
+        .map_err(|e| eyre::eyre!("parse validators in genesis {}: {e}", path.display()))?;
+
+    // Deserialize the rest as a standard Genesis
+    let genesis: Genesis = serde_json::from_value(value)
+        .map_err(|e| eyre::eyre!("parse genesis fields {}: {e}", path.display()))?;
+
+    let chain_spec = Arc::new(ChainSpec::from_genesis(genesis));
+
+    // Parse the file entries into a `ValidatorSet`, erroring on any malformed field.
+    let validator_set = match validators {
+        Some(entries) => {
+            let mut parsed = Vec::with_capacity(entries.len());
+            for e in &entries {
+                let pk_bytes = hex::decode(&e.public_key).map_err(|_| {
+                    eyre::eyre!(
+                        "invalid hex public_key for validator {}: {}",
+                        e.index,
+                        e.public_key
+                    )
+                })?;
+                let public_key = PublicKey::decode(pk_bytes.as_ref()).map_err(|err| {
+                    eyre::eyre!("invalid public_key bytes for validator {}: {err}", e.index)
+                })?;
+                let ingress: SocketAddr = e.ingress.parse().map_err(|_| {
+                    eyre::eyre!(
+                        "invalid ingress address for validator {}: {}",
+                        e.index,
+                        e.ingress
+                    )
+                })?;
+                // File stores egress as a `SocketAddr`, keep only the IP.
+                let egress = e
+                    .egress
+                    .parse::<SocketAddr>()
+                    .map(|addr| addr.ip())
+                    .map_err(|_| {
+                        eyre::eyre!(
+                            "invalid egress address for validator {}: {}",
+                            e.index,
+                            e.egress
+                        )
+                    })?;
+                parsed.push(ValidatorEntry {
+                    public_key,
+                    ingress,
+                    egress,
+                });
+            }
+            ValidatorSet::from_entries(&parsed)
+        }
+        None => ValidatorSet::new(),
+    };
+
+    Ok((chain_spec, validator_set))
 }
 
 #[cfg(test)]
