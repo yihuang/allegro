@@ -27,7 +27,8 @@ use commonware_p2p::authenticated::lookup;
 use commonware_p2p::AddressableManager;
 use commonware_runtime::{Clock, Metrics, Runner};
 use commonware_utils::{ordered::Map, NZUsize};
-use tracing::info;
+use reth_chainspec::ChainSpec;
+use tracing::{error, info, warn};
 use tracing_subscriber::filter::EnvFilter;
 
 // ── CLI ─────────────────────────────────────────────────────
@@ -171,7 +172,28 @@ fn init_tracing(cli: &Cli) {
 //  SHARED HELPERS
 // ════════════════════════════════════════════════════════════
 
-fn build_validator_set(cli: &Cli) -> ValidatorSet {
+/// Load genesis and embedded validators.
+///
+/// Returns `(ChainSpec, ValidatorSet)`.
+/// If `--genesis` is not set, returns the dev chainspec with an empty validator set.
+fn load_genesis(cli: &Cli) -> eyre::Result<(Arc<ChainSpec>, ValidatorSet)> {
+    match &cli.genesis {
+        Some(path) => allegro_node::chainspec::load_chain_with_validators(path),
+        None => Ok((
+            allegro_node::chainspec::dev_chainspec(),
+            ValidatorSet::new(),
+        )),
+    }
+}
+
+/// Use genesis validators if present, otherwise derive a devnet set from
+/// `--node`/`--peer` (correct only when all peers are provided).
+fn build_validator_set(cli: &Cli, genesis_validators: ValidatorSet) -> ValidatorSet {
+    if !genesis_validators.is_empty() {
+        info!("using {} validators from genesis", genesis_validators.len());
+        return genesis_validators;
+    }
+
     let num_validators = 1 + cli.peers.len() as u8;
     let my_index = cli.node as usize;
     let entries: Vec<ValidatorEntry> = (0..num_validators)
@@ -190,7 +212,12 @@ fn build_validator_set(cli: &Cli) -> ValidatorSet {
             }
         })
         .collect();
-    ValidatorSet::from_entries(&entries)
+    let vs = ValidatorSet::from_entries(&entries);
+    info!(
+        "derived {} validators from --node/--peer (no genesis validators)",
+        vs.len()
+    );
+    vs
 }
 
 fn build_consensus_config(cli: &Cli) -> ConsensusConfig {
@@ -263,12 +290,10 @@ async fn track_peers(
         })
         .collect();
     if !pairs.is_empty() {
-        oracle
-            .track(
-                0,
-                Map::try_from(pairs).expect("unique validator public keys"),
-            )
-            .await;
+        match Map::try_from(pairs) {
+            Ok(m) => oracle.track(0, m).await,
+            Err(e) => warn!(%e, "skipping peer tracking: duplicate validator keys"),
+        }
     }
 }
 
@@ -281,7 +306,8 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
     let pk = sk.public_key();
     info!(node = cli.node, listen = %cli.listen, peers = ?cli.peers, "starting allegro node (stub)");
 
-    let validators = build_validator_set(&cli);
+    let (_chain_spec, genesis_validators) = load_genesis(&cli)?;
+    let validators = build_validator_set(&cli, genesis_validators);
     let consensus_config = build_consensus_config(&cli);
 
     let runner = commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
@@ -307,7 +333,7 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
             None
         };
 
-        let _started = start_simplex_engine(
+        match start_simplex_engine(
             context.with_label("engine"),
             EngineConfig {
                 signing_key: sk,
@@ -325,12 +351,17 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
             blocks.0,
             blocks.1,
             oracle,
-        )
-        .expect("failed to start engine");
-
-        info!("allegro (stub) is running");
-        loop {
-            context.sleep(Duration::from_secs(3600)).await;
+        ) {
+            Ok(started) => {
+                let _started = started;
+                info!("allegro (stub) is running");
+                loop {
+                    context.sleep(Duration::from_secs(3600)).await;
+                }
+            }
+            Err(e) => {
+                error!(%e, "failed to start engine");
+            }
         }
     });
 
@@ -346,7 +377,9 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
     let pk = sk.public_key();
     info!(node = cli.node, listen = %cli.listen, peers = ?cli.peers, "starting allegro node (reth)");
 
-    let validators = build_validator_set(&cli);
+    // Load genesis + validators early (before spawning threads)
+    let (chain_spec, genesis_validators) = load_genesis(&cli)?;
+    let validators = build_validator_set(&cli, genesis_validators);
     let consensus_config = build_consensus_config(&cli);
 
     // ── Channel: reth thread → consensus thread ──
@@ -418,7 +451,7 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                 let (finalized_tx, finalized_rx) = futures::channel::mpsc::channel(32);
 
                 // ── Start simplex engine ──
-                let started = start_simplex_engine(
+                match start_simplex_engine(
                     context.with_label("engine"),
                     EngineConfig {
                         signing_key: c_sk,
@@ -436,31 +469,35 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                     blocks.0,
                     blocks.1,
                     oracle,
-                )
-                .expect("failed to start engine");
+                ) {
+                    Ok(started) => {
+                        // ── Finalizer task ──
+                        allegro_node::finalizer::spawn_finalizer(
+                            context.with_label("finalizer"),
+                            finalized_rx,
+                            started.block_info,
+                            _engine_h.clone(),
+                            tracker,
+                        );
 
-                // ── Finalizer task ──
-                allegro_node::finalizer::spawn_finalizer(
-                    context.with_label("finalizer"),
-                    finalized_rx,
-                    started.block_info,
-                    _engine_h.clone(),
-                    tracker,
-                );
-
-                info!("allegro (reth) is running");
-                loop {
-                    context.sleep(Duration::from_secs(3600)).await;
+                        info!("allegro (reth) is running");
+                        loop {
+                            context.sleep(Duration::from_secs(3600)).await;
+                        }
+                    }
+                    Err(e) => {
+                        error!(%e, "failed to start engine");
+                    }
                 }
             });
 
             Ok(())
         })
-        .expect("failed to spawn consensus thread");
+        .map_err(|e| eyre::eyre!("failed to spawn consensus thread: {e}"))?;
 
     // ── Main thread (reth tokio runtime) ──
-    let runner =
-        reth_cli_runner::CliRunner::try_default_runtime().expect("failed to build reth runtime");
+    let runner = reth_cli_runner::CliRunner::try_default_runtime()
+        .map_err(|e| eyre::eyre!("failed to build reth runtime: {e}"))?;
     // Clone the runtime handle before passing it to the block_on closure,
     // since `runner` is borrowed by `block_on`.
     let task_executor = runner.runtime();
@@ -471,23 +508,17 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join(format!("allegro-reth-{}", cli.node)));
 
-        let chain = match &cli.genesis {
-            Some(path) => allegro_node::chainspec::chain_spec_from_genesis_json(path)
-                .expect("failed to load genesis"),
-            None => allegro_node::chainspec::dev_chainspec(),
-        };
-
         let cfg = allegro_node::launch::RethNodeConfig {
             datadir,
             http_port: cli.rpc_port,
             authrpc_port: cli.authrpc_port,
             p2p_port: cli.reth_p2p_port,
-            chain,
+            chain: chain_spec,
         };
 
         let launched = allegro_node::launch::launch(cfg, task_executor)
             .await
-            .expect("failed to launch reth node");
+            .map_err(|e| eyre::eyre!("failed to launch reth node: {e}"))?;
 
         node_tx
             .send((
@@ -496,7 +527,7 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                 launched.genesis_hash,
                 launched.genesis_timestamp,
             ))
-            .expect("consensus thread dropped receiver");
+            .map_err(|_| eyre::eyre!("consensus thread exited before receiving handles"))?;
 
         // Wait for node exit or ctrl-c
         tokio::select! {

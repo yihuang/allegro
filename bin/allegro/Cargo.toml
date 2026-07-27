@@ -27,6 +27,8 @@ commonware-p2p.workspace = true
 commonware-utils.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 
+reth-chainspec.workspace = true
+
 reth-cli-runner.workspace = true
 reth-engine-primitives.workspace = true
 reth-ethereum-engine-primitives.workspace = true

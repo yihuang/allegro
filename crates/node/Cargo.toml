@@ -42,7 +42,12 @@ alloy-rlp.workspace = true
 serde_json.workspace = true
 
 # General
+commonware-codec.workspace = true
 commonware-runtime.workspace = true
+commonware-cryptography.workspace = true
+
+serde.workspace = true
+hex.workspace = true
 eyre.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
