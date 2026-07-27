@@ -190,10 +190,7 @@ fn load_genesis(cli: &Cli) -> eyre::Result<(Arc<ChainSpec>, ValidatorSet)> {
 /// `--node`/`--peer` (correct only when all peers are provided).
 fn build_validator_set(cli: &Cli, genesis_validators: ValidatorSet) -> ValidatorSet {
     if !genesis_validators.is_empty() {
-        info!(
-            "using {} validators from genesis",
-            genesis_validators.len()
-        );
+        info!("using {} validators from genesis", genesis_validators.len());
         return genesis_validators;
     }
 
