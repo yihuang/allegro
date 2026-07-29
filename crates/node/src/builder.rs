@@ -78,15 +78,30 @@ pub fn create_engine_payload_builder(
                     finalized_block_hash: finalized_hash,
                 };
 
-                // 1. Forkchoice update with payload attributes
-                let fcu = engine
-                    .fork_choice_updated(fcs, Some(attrs))
-                    .await
-                    .map_err(|e| format!("fork_choice_updated error: {e}"))?;
-
-                let payload_id = fcu
-                    .payload_id
-                    .ok_or_else(|| "engine returned no payload id".to_string())?;
+                // 1. Forkchoice update with payload attributes.
+                //
+                // The parent may have been self-imported milliseconds ago and
+                // not yet be visible to reth's payload-job generator (it then
+                // fails to start the job, surfacing as "invalid payload
+                // attributes"), so retry briefly before giving up.
+                let mut payload_id = None;
+                let mut last_err = String::new();
+                for attempt in 0..5 {
+                    if attempt > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    match engine.fork_choice_updated(fcs, Some(attrs.clone())).await {
+                        Ok(fcu) => match fcu.payload_id {
+                            Some(id) => {
+                                payload_id = Some(id);
+                                break;
+                            }
+                            None => last_err = "engine returned no payload id".to_string(),
+                        },
+                        Err(e) => last_err = format!("fork_choice_updated error: {e}"),
+                    }
+                }
+                let payload_id = payload_id.ok_or(last_err)?;
 
                 // 2. Resolve the built payload (wait for at least one completed build)
                 //    Todo: add a timeout and fall back to Earliest on timeout
