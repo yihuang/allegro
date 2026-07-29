@@ -2,15 +2,23 @@
 //!
 //! Starts multiple instances, checks they start and connect.
 
+use std::ffi::OsString;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// Path to the allegro binary (set by cargo).
-const BINARY: &str = env!("CARGO_BIN_EXE_allegro");
+/// Path to the allegro binary, resolved at runtime so the test still finds it when
+/// run from a `cargo nextest archive` on another machine (`env!` would hardcode the
+/// build path). Falls back to Cargo's var outside nextest. Uses `var_os` since a
+/// filesystem path may not be valid UTF-8 on Unix.
+fn binary() -> OsString {
+    std::env::var_os("NEXTEST_BIN_EXE_allegro")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_allegro"))
+        .expect("neither NEXTEST_BIN_EXE_allegro nor CARGO_BIN_EXE_allegro is set")
+}
 
 #[test]
 fn test_allegro_binary_help() {
-    let output = Command::new(BINARY)
+    let output = Command::new(binary())
         .arg("--help")
         .output()
         .expect("failed to run allegro");
@@ -23,7 +31,7 @@ fn test_allegro_binary_help() {
 
 #[test]
 fn test_allegro_binary_version() {
-    let output = Command::new(BINARY)
+    let output = Command::new(binary())
         .arg("--version")
         .output()
         .expect("failed to run allegro");
@@ -32,7 +40,7 @@ fn test_allegro_binary_version() {
 
 #[test]
 fn test_allegro_single_node_start() {
-    let mut child = Command::new(BINARY)
+    let mut child = Command::new(binary())
         .arg("--node")
         .arg("0")
         .arg("--listen")
@@ -129,7 +137,7 @@ fn test_allegro_two_nodes() {
 
     let spawn_node =
         |node: u8, listen: u16, rpc_port: u16, peers: &[String], datadir: &std::path::Path| {
-            let mut cmd = Command::new(BINARY);
+            let mut cmd = Command::new(binary());
             cmd.arg("--node")
                 .arg(node.to_string())
                 .arg("--listen")

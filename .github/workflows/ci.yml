@@ -1,5 +1,7 @@
 name: CI
 
+permissions: {}
+
 on:
   push:
     branches: [main]
@@ -17,36 +19,42 @@ env:
   ALLEGRO_LOG_LEVEL: warn
 
 jobs:
-  # ── Check compilation with caching ────────────────────────
+  # Type-check the workspace.
   check:
     name: cargo check
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write # sccache-action saves to the GitHub Actions cache
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          toolchain: stable
+          persist-credentials: false
 
-      - uses: rui314/setup-mold@v1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.15.0
 
       - name: Check workspace
         run: cargo check --workspace --locked
 
-  # ── Tests (unit + integration + process e2e) ──────────────
-  test:
-    name: test (${{ matrix.partition }}/${{ strategy.job-total }})
+  # Compile the test suite once; partitions reuse the archive.
+  build-test-archive:
+    name: build test archive
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        partition: [1, 2]
+    permissions:
+      contents: read
+      actions: write # sccache-action + upload-artifact write to the Actions cache/artifact store
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Free disk space
         run: |
@@ -55,59 +63,130 @@ jobs:
           docker system prune -af --volumes || true
           df -h
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - uses: rui314/setup-mold@v1
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.15.0
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
+        with:
+          tool: nextest@0.9.124
+
+      - name: Build and archive tests
+        run: cargo nextest archive --profile ci --workspace --archive-file nextest-archive.tar.zst
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive
+          path: nextest-archive.tar.zst
+          retention-days: 1
+
+  # Run tests from the prebuilt archive, split across partitions.
+  test:
+    name: test (${{ matrix.partition }}/${{ strategy.job-total }})
+    needs: build-test-archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTC_WRAPPER: ""
+    permissions:
+      contents: read
+      actions: read # download-artifact reads the archive uploaded by build-test-archive
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          docker system prune -af --volumes || true
+          df -h
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
           tool: nextest@0.9.124
 
       - name: Install Foundry (for cast in e2e)
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@82dee4ba654bd2146511f85f0d013af94670c4de # v1.4.0
 
-      - name: Build tests
-        run: cargo nextest run --profile ci --workspace --partition count:${{ matrix.partition }}/2 --no-run
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: nextest-archive
 
       - name: Run tests
-        run: cargo nextest run --profile ci --workspace --partition count:${{ matrix.partition }}/2
+        run: cargo nextest run --profile ci --archive-file nextest-archive.tar.zst --workspace-remap . --partition count:${{ matrix.partition }}/${{ strategy.job-total }}
 
-  # ── Formatting ───────────────────────────────────────────
+  # Check formatting.
   fmt:
     name: cargo fmt
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          toolchain: stable
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
           components: rustfmt
 
       - name: Check formatting
         run: cargo fmt --all --check
 
-  # ── Clippy ───────────────────────────────────────────────
+  # Lint with clippy, warnings denied.
   clippy:
     name: cargo clippy
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write # sccache-action saves to the GitHub Actions cache
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          toolchain: stable
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
           components: clippy
 
-      - uses: rui314/setup-mold@v1
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.15.0
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
+
+  # Single required check that gates on every job above.
+  ci-success:
+    name: ci success
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      actions: read # alls-green reads job status via the Actions API
+    needs:
+      - check
+      - test
+      - fmt
+      - clippy
+    timeout-minutes: 5
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
+        with:
+          jobs: ${{ toJSON(needs) }}
