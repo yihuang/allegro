@@ -144,6 +144,7 @@ async fn start_engines(
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
+            genesis_timestamp_millis: 0,
             finalized_tx: None,
         };
 
@@ -391,6 +392,7 @@ fn test_metrics_track_proposals() {
                 metrics: my_metrics,
                 genesis_hash: B256::ZERO,
                 genesis_timestamp: 0,
+                genesis_timestamp_millis: 0,
                 finalized_tx: None,
             };
 

@@ -152,10 +152,15 @@ pub fn create_engine_payload_builder(
 
                 match payload_status.status {
                     alloy_rpc_types_engine::PayloadStatusEnum::Valid => {
+                        // In reth mode, the on-chain block is a standard Ethereum block
+                        // (EthBlock), so there is no AllegroHeader timestamp_millis.
+                        // The consensus actor tracks millisecond monotonicity via
+                        // the application-level BlockInfo, not the on-chain header.
                         Ok(ValidationResult::Valid(BlockMeta {
                             hash,
                             number,
                             timestamp,
+                            timestamp_millis: 0,
                         }))
                     }
                     alloy_rpc_types_engine::PayloadStatusEnum::Invalid { validation_error } => {

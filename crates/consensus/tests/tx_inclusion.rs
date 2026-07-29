@@ -117,6 +117,7 @@ fn build_block(
     };
     let header = AllegroHeader {
         inner,
+        timestamp_millis: 0,
         consensus_context: Some(AllegroConsensusContext {
             epoch,
             view,
@@ -158,6 +159,7 @@ fn validate_block(block_bytes: &[u8]) -> Result<ValidationResult, String> {
         hash,
         number: block.header.inner.number,
         timestamp: block.header.inner.timestamp,
+        timestamp_millis: block.header.timestamp_millis,
     }))
 }
 
@@ -362,6 +364,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
                         metrics: None,
                         genesis_hash: B256::ZERO,
                         genesis_timestamp: 0,
+                        genesis_timestamp_millis: 0,
                         finalized_tx: None,
                     },
                     ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),

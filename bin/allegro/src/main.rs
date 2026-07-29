@@ -345,6 +345,7 @@ fn run_stub(cli: Cli) -> eyre::Result<()> {
                 metrics,
                 genesis_hash: Default::default(),
                 genesis_timestamp: 0,
+                genesis_timestamp_millis: 0,
                 finalized_tx: None,
             },
             (votes, certs, resolver),
@@ -393,6 +394,7 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
         PayloadBuilderHandle<EthEngineTypes>,
         B256,
         u64,
+        u64,
     );
     let (node_tx, node_rx) = std::sync::mpsc::channel::<RethHandles>();
 
@@ -406,7 +408,7 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
     let consensus_thread = std::thread::Builder::new()
         .name("allegro-consensus".into())
         .spawn(move || -> eyre::Result<()> {
-            let (_engine_h, _payload_h, g_hash, g_ts) = node_rx
+            let (_engine_h, _payload_h, g_hash, g_ts, g_ts_millis) = node_rx
                 .recv()
                 .map_err(|_| eyre::eyre!("reth node channel closed before sending"))?;
 
@@ -463,6 +465,7 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                         metrics,
                         genesis_hash: g_hash,
                         genesis_timestamp: g_ts,
+                        genesis_timestamp_millis: g_ts_millis,
                         finalized_tx: Some(finalized_tx),
                     },
                     (votes, certs, resolver),
@@ -526,6 +529,7 @@ fn run_reth(cli: Cli) -> eyre::Result<()> {
                 launched.payload_builder_handle,
                 launched.genesis_hash,
                 launched.genesis_timestamp,
+                launched.genesis_timestamp_millis,
             ))
             .map_err(|_| eyre::eyre!("consensus thread exited before receiving handles"))?;
 

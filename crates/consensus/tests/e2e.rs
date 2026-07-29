@@ -63,6 +63,7 @@ fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
         None,
         B256::ZERO,
         0,
+        0,
     );
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
@@ -141,6 +142,7 @@ async fn test_proposer_key_conversion() {
             timestamp: 1_700_000_000,
             ..Default::default()
         },
+        timestamp_millis: 1_700_000_000_000,
         consensus_context: Some(ctx),
     };
     let encoded = alloy_rlp::encode(&header);
@@ -215,6 +217,7 @@ fn test_simplex_engine_initializes() {
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
+            genesis_timestamp_millis: 0,
             finalized_tx: None,
         };
 
@@ -287,6 +290,7 @@ fn test_simplex_engine_loopback() {
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
+            genesis_timestamp_millis: 0,
             finalized_tx: None,
         };
 
@@ -398,6 +402,7 @@ fn test_two_validators_simulated() {
                 metrics: None,
                 genesis_hash: B256::ZERO,
                 genesis_timestamp: 0,
+                genesis_timestamp_millis: 0,
                 finalized_tx: None,
             };
 
@@ -460,6 +465,7 @@ fn test_empty_validator_set_rejected() {
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
+            genesis_timestamp_millis: 0,
             finalized_tx: None,
         };
 

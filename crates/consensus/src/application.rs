@@ -48,6 +48,8 @@ pub struct BlockInfo {
     pub proposer: PublicKey,
     /// Block timestamp (seconds since epoch).
     pub timestamp: u64,
+    /// Block timestamp (milliseconds since epoch), monotonically increasing.
+    pub timestamp_millis: u64,
 }
 
 // ── Shared block stores ─────────────────────────────────────
@@ -260,6 +262,7 @@ impl Actor {
         metrics: Option<ConsensusMetrics>,
         genesis_hash: B256,
         genesis_timestamp: u64,
+        genesis_timestamp_millis: u64,
     ) -> (Self, Mailbox) {
         // Register genesis block info
         let genesis_digest = commonware_cryptography::Digest::EMPTY;
@@ -274,6 +277,7 @@ impl Actor {
                         view: 0,
                         proposer: genesis_sk.public_key(),
                         timestamp: genesis_timestamp,
+                        timestamp_millis: genesis_timestamp_millis,
                     },
                 );
             }
@@ -338,17 +342,25 @@ impl Actor {
         }
 
         // Look up parent block info from our tracking
-        let (parent_number, parent_hash, parent_timestamp) = match self.block_info.read() {
-            Ok(guard) => guard
-                .get(&parent_digest)
-                .map(|info| (info.number, info.hash, info.timestamp))
-                .unwrap_or((0, B256::ZERO, 0)),
-            Err(e) => {
-                error!(error = %e, "block_info read lock poisoned");
-                let _ = msg.response.send(commonware_cryptography::Digest::EMPTY);
-                return;
-            }
-        };
+        let (parent_number, parent_hash, parent_timestamp, parent_timestamp_millis) =
+            match self.block_info.read() {
+                Ok(guard) => guard
+                    .get(&parent_digest)
+                    .map(|info| {
+                        (
+                            info.number,
+                            info.hash,
+                            info.timestamp,
+                            info.timestamp_millis,
+                        )
+                    })
+                    .unwrap_or((0, B256::ZERO, 0, 0)),
+                Err(e) => {
+                    error!(error = %e, "block_info read lock poisoned");
+                    let _ = msg.response.send(commonware_cryptography::Digest::EMPTY);
+                    return;
+                }
+            };
 
         let proposer_bytes = {
             let mut bytes = [0u8; 32];
@@ -356,12 +368,20 @@ impl Actor {
             bytes
         };
 
-        // Timestamp must be strictly greater than parent (reth Engine API requirement).
+        // Timestamp (seconds) must be strictly greater than parent's
+        // (reth Engine API requirement).
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let timestamp = std::cmp::max(now, parent_timestamp + 1);
+        let timestamp = std::cmp::max(now, parent_timestamp);
+
+        // Millisecond timestamp must be monotonically increasing.
+        let now_millis = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let timestamp_millis = std::cmp::max(now_millis, parent_timestamp_millis);
 
         // Delegate block building to the payload builder
         let request = BuildPayloadRequest {
@@ -373,6 +393,8 @@ impl Actor {
             view: msg.round.view().get(),
             proposer: proposer_bytes,
             timestamp,
+            timestamp_millis,
+            parent_timestamp_millis,
         };
         let built = self.payload_builder.build_payload(&request).await;
 
@@ -405,6 +427,7 @@ impl Actor {
                         view: msg.round.view().get(),
                         proposer: msg.leader.clone(),
                         timestamp,
+                        timestamp_millis,
                     },
                 );
             }
@@ -495,6 +518,7 @@ impl Actor {
                                 view: msg.round.view().get(),
                                 proposer: msg.proposer.clone(),
                                 timestamp: meta.timestamp,
+                                timestamp_millis: meta.timestamp_millis,
                             },
                         );
                     }
