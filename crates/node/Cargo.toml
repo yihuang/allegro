@@ -19,8 +19,15 @@ allegro-consensus = { path = "../consensus" }
 # Reth
 reth-chainspec.workspace = true
 reth-cli-runner.workspace = true
+reth-consensus.workspace = true
+reth-consensus-common.workspace = true
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-engine-primitives.workspace = true
+reth-ethereum-consensus.workspace = true
+reth-execution-types.workspace = true
+reth-primitives-traits = { workspace = true }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+alloy-consensus = { workspace = true }
 reth-ethereum = { workspace = true, features = ["node"] }
 reth-ethereum-engine-primitives.workspace = true
 reth-node-api.workspace = true
@@ -30,7 +37,6 @@ reth-node-ethereum.workspace = true
 reth-payload-builder.workspace = true
 reth-payload-primitives.workspace = true
 reth-ethereum-primitives = { workspace = true }
-reth-primitives-traits = { workspace = true }
 reth-provider.workspace = true
 reth-tasks.workspace = true
 

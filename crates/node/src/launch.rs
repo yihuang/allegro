@@ -21,22 +21,17 @@ use reth_ethereum::node::{
     },
     EthereumNode,
 };
+
+use reth_node_builder::rpc::RpcAddOns;
+use reth_node_ethereum::EthereumEthApiBuilder;
+
+use reth_rpc_builder::Identity;
+
+use crate::allegro_consensus::{AllegroConsensusBuilder, AllegroEngineValidatorBuilder};
 use reth_ethereum_engine_primitives::EthEngineTypes;
+
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_tasks::TaskExecutor;
-
-/// Type aliases for the launched full node (standard Ethereum components).
-pub type AllegroFullNodeTypes =
-    reth_node_builder::RethFullAdapter<reth_db::DatabaseEnv, EthereumNode>;
-pub type AllegroNodeAdapter = reth_node_builder::NodeAdapter<AllegroFullNodeTypes>;
-pub type AllegroFullNode = reth_node_builder::node::FullNode<
-    AllegroNodeAdapter,
-    reth_node_ethereum::EthereumAddOns<
-        AllegroNodeAdapter,
-        reth_node_ethereum::EthereumEthApiBuilder,
-        reth_node_ethereum::EthereumEngineValidatorBuilder,
-    >,
->;
 
 /// Configuration for launching a reth execution node.
 #[derive(Debug, Clone)]
@@ -79,12 +74,8 @@ pub struct LaunchedRethNode {
     pub genesis_timestamp: u64,
     /// Genesis block timestamp in milliseconds.
     pub genesis_timestamp_millis: u64,
-    /// The full node.
-    ///
-    /// **Must be kept alive**: the JSON-RPC servers (HTTP/auth) are bound to
-    /// their server handles stored inside the node — dropping the node shuts
-    /// them down (engine/p2p tasks survive, which made this subtle).
-    pub node: AllegroFullNode,
+    /// Opaque handle keeping the reth node alive (owns JSON-RPC server handles).
+    _keep_alive: Arc<dyn std::any::Any + Send + Sync>,
     /// Future that resolves when the reth node exits.
     pub exit: Pin<Box<dyn Future<Output = eyre::Result<()>> + Send>>,
 }
@@ -105,7 +96,7 @@ impl LaunchedRethNode {
 ///
 /// The node is configured with:
 /// - No dev-mode auto-mining (blocks only via engine API FCU)
-/// - Standard Ethereum components (EthereumNode default)
+/// - Standard Ethereum components but with our relaxed-timestamp consensus
 /// - HTTP JSON-RPC on the configured port
 /// - Engine API (auth RPC) on the configured port
 /// - P2P networking on the configured port
@@ -128,23 +119,38 @@ pub async fn launch(
             http: true,
             http_port: cfg.http_port,
             auth_port: cfg.authrpc_port,
-            // IPC uses a global default path (/tmp/reth.ipc) — multiple nodes
-            // on one machine would collide; allegro doesn't need it.
             ipcdisable: true,
             ..Default::default()
         })
         .with_network(NetworkArgs {
             port: cfg.p2p_port,
             discovery: reth_ethereum::node::core::args::DiscoveryArgs {
-                // Devnet mode: allegro's embedded reth nodes do not discover
-                // each other (blocks flow over the consensus p2p network).
-                // Disabling discovery avoids discv4/discv5 UDP port collisions
-                // between co-located nodes.
                 disable_discovery: true,
                 ..Default::default()
             },
             ..Default::default()
         });
+
+    // Build standard Ethereum components but with our relaxed-timestamp consensus.
+    let components = EthereumNode::components()
+        .consensus(AllegroConsensusBuilder);
+
+    // Build add-ons with our custom engine validator (relaxed timestamp check).
+    // Use the standard RpcAddOns with our custom PayloadValidatorBuilder.
+    let add_ons = reth_node_ethereum::EthereumAddOns::<
+        _,
+        reth_node_ethereum::EthereumEthApiBuilder,
+        AllegroEngineValidatorBuilder,
+    >::new(
+        RpcAddOns::new(
+            EthereumEthApiBuilder::default(),
+            AllegroEngineValidatorBuilder,
+            reth_node_builder::rpc::BasicEngineApiBuilder::default(),
+            reth_node_builder::rpc::BasicEngineValidatorBuilder::default(),
+            Identity::new(),
+            Identity::new(),
+        )
+    );
 
     let NodeHandle {
         node,
@@ -152,20 +158,22 @@ pub async fn launch(
     } = NodeBuilder::new(node_config)
         .with_database(db)
         .with_launch_context(task_executor)
-        .node(EthereumNode::default())
+        .with_types()
+        .with_components(components)
+        .with_add_ons(add_ons)
         .launch()
         .await
         .wrap_err("failed to launch reth node")?;
 
-    // Extract handles — cheap channel-sender clones; the `node` itself is
-    // moved into `LaunchedRethNode` to keep the RPC servers alive.
+    // Extract handles before type-erasing the node.
     let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
     let payload_builder_handle = node.payload_builder_handle.clone();
-
-    let chain_spec = node.chain_spec();
-    let genesis_hash = chain_spec.genesis_hash();
-    let genesis_timestamp = chain_spec.genesis_timestamp();
+    let genesis_hash = node.chain_spec().genesis_hash();
+    let genesis_timestamp = node.chain_spec().genesis_timestamp();
     let genesis_timestamp_millis = genesis_timestamp * 1000;
+
+    // Keep the node alive (dropping it would shut down JSON-RPC servers).
+    let keep_alive = Arc::new(node) as Arc<dyn std::any::Any + Send + Sync>;
 
     Ok(LaunchedRethNode {
         engine_handle,
@@ -173,7 +181,7 @@ pub async fn launch(
         genesis_hash,
         genesis_timestamp,
         genesis_timestamp_millis,
-        node,
+        _keep_alive: keep_alive,
         exit: Box::pin(node_exit_future),
     })
 }

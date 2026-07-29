@@ -254,6 +254,7 @@ fn empty_txs_root() -> B256 {
 const EMPTY_OMMERS_HASH: B256 = B256::ZERO;
 
 /// Build an empty Allegro block (no transactions).
+#[allow(clippy::too_many_arguments)]
 pub fn build_empty_block_internal(
     parent_hash: B256,
     parent_number: u64,

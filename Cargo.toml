@@ -63,6 +63,10 @@ ed25519-consensus = "2.1.0"
 rand_core = "0.6.4"
 
 # ── Reth (rev 1bf2384) ──
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384", default-features = false }
 reth-primitives-traits = { version = "0.5.2", default-features = false }
@@ -77,6 +81,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "1bf23
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 
 [workspace.lints]

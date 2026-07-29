@@ -368,7 +368,8 @@ impl Actor {
             bytes
         };
 
-        // Timestamp (seconds) must be ≥ parent (reth Engine API requirement).
+        // Timestamp (seconds) must be strictly greater than parent's
+        // (reth Engine API requirement).
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
