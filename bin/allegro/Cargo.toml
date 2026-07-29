@@ -29,8 +29,9 @@ commonware-runtime = { workspace = true, features = ["external"] }
 
 reth-chainspec.workspace = true
 
-reth-cli-runner.workspace = true
+reth-cli.workspace = true
 reth-engine-primitives.workspace = true
+reth-ethereum-cli.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-payload-builder.workspace = true
 tokio.workspace = true

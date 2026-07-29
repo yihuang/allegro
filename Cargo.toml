@@ -70,7 +70,9 @@ reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "1bf
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384", default-features = false }
 reth-primitives-traits = { version = "0.5.2", default-features = false }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384", default-features = false }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }

@@ -92,6 +92,66 @@ impl LaunchedRethNode {
     }
 }
 
+/// Standard Ethereum add-ons, except payload validation relaxes the timestamp
+/// check to `>=` (see [`crate::allegro_consensus`]). A macro because the
+/// add-ons type is generic over the node and the bounds are unwieldy.
+macro_rules! allegro_add_ons {
+    () => {
+        reth_node_ethereum::EthereumAddOns::<
+                                    _,
+                                    EthereumEthApiBuilder,
+                                    AllegroEngineValidatorBuilder,
+                                >::new(RpcAddOns::new(
+                                    EthereumEthApiBuilder::default(),
+                                    AllegroEngineValidatorBuilder,
+                                    reth_node_builder::rpc::BasicEngineApiBuilder::default(),
+                                    reth_node_builder::rpc::BasicEngineValidatorBuilder::default(),
+                                    Identity::new(),
+                                    Identity::new(),
+                                ))
+    };
+}
+
+/// Wrap a launched node + exit future into [`LaunchedRethNode`].
+macro_rules! into_launched {
+    ($node:expr, $exit:expr) => {{
+        let node = $node;
+        let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
+        let payload_builder_handle = node.payload_builder_handle.clone();
+        let genesis_hash = node.chain_spec().genesis_hash();
+        let genesis_timestamp = node.chain_spec().genesis_timestamp();
+        LaunchedRethNode {
+            engine_handle,
+            payload_builder_handle,
+            genesis_hash,
+            genesis_timestamp,
+            genesis_timestamp_millis: genesis_timestamp * 1000,
+            // Keep the node alive (dropping it would shut down JSON-RPC servers).
+            _keep_alive: Arc::new(node) as Arc<dyn std::any::Any + Send + Sync>,
+            exit: Box::pin($exit),
+        }
+    }};
+}
+
+/// Launch a reth node from the reth CLI's prepared builder (`allegro node`),
+/// swapping in allegro's relaxed-timestamp consensus and engine validation.
+pub async fn launch_with_builder(
+    builder: reth_node_builder::WithLaunchContext<NodeBuilder<reth_db::DatabaseEnv, ChainSpec>>,
+) -> eyre::Result<LaunchedRethNode> {
+    let NodeHandle {
+        node,
+        node_exit_future,
+    } = builder
+        .with_types::<EthereumNode>()
+        .with_components(EthereumNode::components().consensus(AllegroConsensusBuilder))
+        .with_add_ons(allegro_add_ons!())
+        .launch()
+        .await
+        .wrap_err("failed to launch reth node")?;
+
+    Ok(into_launched!(node, node_exit_future))
+}
+
 /// Launch a reth execution node with the given configuration.
 ///
 /// The node is configured with:
@@ -134,20 +194,7 @@ pub async fn launch(
     // Build standard Ethereum components but with our relaxed-timestamp consensus.
     let components = EthereumNode::components().consensus(AllegroConsensusBuilder);
 
-    // Build add-ons with our custom engine validator (relaxed timestamp check).
-    // Use the standard RpcAddOns with our custom PayloadValidatorBuilder.
-    let add_ons = reth_node_ethereum::EthereumAddOns::<
-        _,
-        reth_node_ethereum::EthereumEthApiBuilder,
-        AllegroEngineValidatorBuilder,
-    >::new(RpcAddOns::new(
-        EthereumEthApiBuilder::default(),
-        AllegroEngineValidatorBuilder,
-        reth_node_builder::rpc::BasicEngineApiBuilder::default(),
-        reth_node_builder::rpc::BasicEngineValidatorBuilder::default(),
-        Identity::new(),
-        Identity::new(),
-    ));
+    let add_ons = allegro_add_ons!();
 
     let NodeHandle {
         node,
@@ -162,23 +209,5 @@ pub async fn launch(
         .await
         .wrap_err("failed to launch reth node")?;
 
-    // Extract handles before type-erasing the node.
-    let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
-    let payload_builder_handle = node.payload_builder_handle.clone();
-    let genesis_hash = node.chain_spec().genesis_hash();
-    let genesis_timestamp = node.chain_spec().genesis_timestamp();
-    let genesis_timestamp_millis = genesis_timestamp * 1000;
-
-    // Keep the node alive (dropping it would shut down JSON-RPC servers).
-    let keep_alive = Arc::new(node) as Arc<dyn std::any::Any + Send + Sync>;
-
-    Ok(LaunchedRethNode {
-        engine_handle,
-        payload_builder_handle,
-        genesis_hash,
-        genesis_timestamp,
-        genesis_timestamp_millis,
-        _keep_alive: keep_alive,
-        exit: Box::pin(node_exit_future),
-    })
+    Ok(into_launched!(node, node_exit_future))
 }

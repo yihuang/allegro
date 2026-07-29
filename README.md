@@ -44,20 +44,24 @@ cargo run -p allegro-xtask -- genesis \
     --validators 4 --base-port 13000 --output ./devnet
 ```
 
-Produces `genesis.json`, `validators.json`, and per-node key files.
+Produces `genesis.json` and `validators.json` (node identity is derived
+from the validator index; no key files are needed).
 
 ### Cli reference
 
 ```
-allegro --execution <reth|stub>    # default: reth
-        --node <N>                 # validator index (0-based)
-        --listen <ADDR>            # consensus p2p address
-        --peer <ADDR>              # repeat for every peer (all nodes must list each other)
-        --leader-timeout <MS>      # default: 2000
-        --datadir <PATH>           # reth mdbx database directory
-        --rpc-port <PORT>          # default: 8545
-        --authrpc-port <PORT>      # default: 8551
-        --reth-p2p-port <PORT>     # default: 30303
+allegro node [reth flags] [--consensus.* flags]   # reth's CLI + consensus extension
+allegro node --dev [reth flags]                   # solo-validator devnet (dev chain, no genesis file)
+allegro stub [--consensus.* flags]                # standalone stub mode (no reth)
+
+# reth flags (full reth node CLI; the usual devnet subset):
+#   --chain <PATH|dev>  --datadir <PATH>  --http --http.port <P>
+#   --authrpc.port <P>  --port <P>  --disable-discovery  --ipcdisable
+# consensus flags:
+#   --consensus.node-index <N>          # validator index (0-based)
+#   --consensus.listen-address <ADDR>   # consensus p2p address
+#   --consensus.peer <ADDR>             # repeat for every peer (all nodes must list each other)
+#   --consensus.leader-timeout <MS>     # default: 2000
 ```
 
 ## Architecture

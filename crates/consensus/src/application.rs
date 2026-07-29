@@ -357,7 +357,7 @@ impl Actor {
                     .unwrap_or((0, B256::ZERO, 0, 0)),
                 Err(e) => {
                     error!(error = %e, "block_info read lock poisoned");
-                    let _ = msg.response.send(commonware_cryptography::Digest::EMPTY);
+                    // Drop the responder (see the payload-failure path below).
                     return;
                 }
             };
@@ -409,7 +409,12 @@ impl Actor {
                 if let Some(ref m) = self.metrics {
                     m.inc_errors();
                 }
-                let _ = msg.response.send(commonware_cryptography::Digest::EMPTY);
+                // Drop the responder without answering: proposing the EMPTY
+                // digest would get a genesis-parented "block" notarized and
+                // permanently poison parent tracking (every later view would
+                // build on genesis while finalization has moved past it).
+                // With no proposal the view times out and the next one
+                // retries on the same healthy parent.
                 return;
             }
         };
