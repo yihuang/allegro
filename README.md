@@ -50,6 +50,7 @@ Produces `genesis.json`, `validators.json`, and per-node key files.
 
 ```
 allegro node [reth flags] [--consensus.* flags]   # reth's CLI + consensus extension
+allegro node --dev [reth flags]                   # solo-validator devnet (dev chain, no genesis file)
 allegro stub [--consensus.* flags]                # standalone stub mode (no reth)
 
 # reth flags (full reth node CLI; the usual devnet subset):

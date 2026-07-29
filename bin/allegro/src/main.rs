@@ -54,7 +54,8 @@ pub struct ConsensusArgs {
     )]
     pub node: u8,
 
-    /// P2P listen address of the consensus layer (default 0.0.0.0:3000).
+    /// P2P listen address of the consensus layer.
+    /// Defaults to 0.0.0.0:3000, or an ephemeral localhost port in dev mode.
     #[arg(long = "consensus.listen-address", env = "ALLEGRO_LISTEN")]
     pub listen: Option<SocketAddr>,
 
@@ -144,14 +145,12 @@ pub struct ConsensusArgs {
 }
 
 impl ConsensusArgs {
-    /// Fill in the listen address if not set explicitly.
-    fn resolve_listen(&mut self) {
+    /// Fill in the listen address if not set explicitly: any free localhost
+    /// port in dev mode (nothing dials a solo validator), 0.0.0.0:3000 else.
+    fn resolve_listen(&mut self, dev: bool) {
         if self.listen.is_none() {
-            self.listen = Some(
-                "0.0.0.0:3000"
-                    .parse()
-                    .expect("valid default listen address"),
-            );
+            let default = if dev { "127.0.0.1:0" } else { "0.0.0.0:3000" };
+            self.listen = Some(default.parse().expect("valid default listen address"));
         }
     }
 
@@ -203,10 +202,19 @@ fn main() -> eyre::Result<()> {
         return run_stub(StubCli::parse_from(argv));
     }
 
-    let cli = Cli::<AllegroChainSpecParser, ConsensusArgs>::parse();
+    let mut cli = Cli::<AllegroChainSpecParser, ConsensusArgs>::parse();
+
+    // `--dev` (tempo/reth compatible) means a solo-validator devnet here:
+    // consensus drives the engine API, so reth's dev auto-miner must stay off.
+    // The `--chain` default already resolved to the dev spec via clap.
+    let mut dev = false;
+    cli.apply_node_command(|cmd| {
+        dev = cmd.dev.dev;
+        cmd.dev.dev = false;
+    });
 
     cli.run(|builder, mut consensus| async move {
-        consensus.resolve_listen();
+        consensus.resolve_listen(dev);
         let launched = allegro_node::launch::launch_with_builder(builder).await?;
 
         let genesis_validators = match GENESIS_PATH.lock().unwrap().take() {
@@ -504,7 +512,7 @@ fn run_stub(cli: StubCli) -> eyre::Result<()> {
         .try_init();
 
     let mut args = cli.consensus;
-    args.resolve_listen();
+    args.resolve_listen(false);
     let genesis_validators = match &cli.chain {
         Some(path) => allegro_node::chainspec::load_chain_with_validators(path)?.1,
         None => ValidatorSet::new(),

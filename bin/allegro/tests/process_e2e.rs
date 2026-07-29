@@ -228,3 +228,49 @@ fn test_allegro_two_nodes() {
     assert!(result1.is_ok(), "node 1: {}", result1.unwrap_err());
     assert!(!failed, "one or more nodes exited early");
 }
+
+#[test]
+fn test_allegro_dev_node() {
+    let rpc = free_port();
+    let datadir = std::env::temp_dir().join(format!("allegro-e2e-dev-{rpc}"));
+    let _ = std::fs::remove_dir_all(&datadir);
+
+    // `--dev` = solo-validator devnet: no genesis file, no consensus flags.
+    let mut child = Command::new(binary())
+        .arg("node")
+        .arg("--dev")
+        .arg("--datadir")
+        .arg(&datadir)
+        .arg("--http")
+        .arg("--http.port")
+        .arg(rpc.to_string())
+        .arg("--authrpc.port")
+        .arg(free_port().to_string())
+        .arg("--port")
+        .arg(free_port().to_string())
+        .arg("--disable-discovery")
+        .arg("--ipcdisable")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start allegro --dev");
+
+    let result = wait_for_block(rpc, 2, Duration::from_secs(60));
+
+    let alive = child.try_wait().expect("check child").is_none();
+    child.kill().ok();
+    let output = child.wait_with_output().expect("wait for child");
+    if result.is_err() || !alive {
+        eprintln!(
+            "── dev node stdout ──\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        eprintln!(
+            "── dev node stderr ──\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&datadir);
+    assert!(alive, "dev node exited early");
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+}

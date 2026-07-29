@@ -633,6 +633,7 @@ pub fn start_simplex_engine<TContext, …>(
 
 ```
 allegro node [reth flags] [--consensus.* flags]   # reth's CLI + consensus extension
+allegro node --dev [reth flags]                   # solo-validator devnet (dev chain, no genesis file)
 allegro stub [--consensus.* flags]                # standalone stub mode (no reth)
 
 # consensus flags: --consensus.node-index, --consensus.listen-address,
