@@ -311,6 +311,8 @@ pub struct EngineConfig {
     pub genesis_timestamp: u64,
     /// Optional channel for forwarding finalized block digests (reth finalization).
     pub finalized_tx: Option<futures::channel::mpsc::Sender<AllegroDigest>>,
+    /// Genesis block millisecond timestamp.
+    pub genesis_timestamp_millis: u64,
 }
 
 impl EngineConfig {
@@ -327,6 +329,7 @@ impl EngineConfig {
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
             finalized_tx: None,
+            genesis_timestamp_millis: 0,
         }
     }
 
@@ -365,6 +368,7 @@ impl Default for EngineConfig {
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
+            genesis_timestamp_millis: 0,
             finalized_tx: None,
         }
     }
@@ -481,6 +485,7 @@ where
         metrics.clone(),
         config.genesis_hash,
         config.genesis_timestamp,
+        config.genesis_timestamp_millis,
     );
 
     let page_cache = CacheRef::from_pooler(

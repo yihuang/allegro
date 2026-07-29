@@ -33,8 +33,10 @@ pub struct BlockMeta {
     pub hash: B256,
     /// Block number.
     pub number: u64,
-    /// Block timestamp.
+    /// Block timestamp (seconds since UNIX epoch).
     pub timestamp: u64,
+    /// Millisecond-precision timestamp, monotonically increasing.
+    pub timestamp_millis: u64,
 }
 
 /// Result of block validation.
@@ -102,6 +104,7 @@ impl PayloadBuilder for StubPayloadBuilder {
             request.view,
             request.proposer,
             request.timestamp,
+            request.timestamp_millis,
         );
         Box::pin(async move { result })
     }
@@ -129,7 +132,12 @@ pub struct BuildPayloadRequest {
     pub epoch: u64,
     pub view: u64,
     pub proposer: [u8; 32],
+    /// Block timestamp (seconds since UNIX epoch) — Ethereum standard field.
     pub timestamp: u64,
+    /// Millisecond-precision timestamp — must be ≥ parent's `timestamp_millis`.
+    pub timestamp_millis: u64,
+    /// Parent block's millisecond timestamp, for monotonicity enforcement.
+    pub parent_timestamp_millis: u64,
 }
 
 /// Validate block request parameters.
@@ -254,6 +262,7 @@ pub fn build_empty_block_internal(
     view: u64,
     proposer: [u8; 32],
     timestamp: u64,
+    timestamp_millis: u64,
 ) -> Result<BuiltPayload, String> {
     let inner = alloy_consensus::Header {
         parent_hash,
@@ -290,6 +299,7 @@ pub fn build_empty_block_internal(
 
     let header = AllegroHeader {
         inner,
+        timestamp_millis,
         consensus_context: Some(consensus_context),
     };
 
@@ -335,6 +345,7 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
         hash,
         number: header.inner.number,
         timestamp: header.inner.timestamp,
+        timestamp_millis: header.timestamp_millis,
     }))
 }
 

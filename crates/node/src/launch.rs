@@ -77,6 +77,8 @@ pub struct LaunchedRethNode {
     pub genesis_hash: B256,
     /// Genesis block timestamp.
     pub genesis_timestamp: u64,
+    /// Genesis block timestamp in milliseconds.
+    pub genesis_timestamp_millis: u64,
     /// The full node.
     ///
     /// **Must be kept alive**: the JSON-RPC servers (HTTP/auth) are bound to
@@ -163,12 +165,14 @@ pub async fn launch(
     let chain_spec = node.chain_spec();
     let genesis_hash = chain_spec.genesis_hash();
     let genesis_timestamp = chain_spec.genesis_timestamp();
+    let genesis_timestamp_millis = genesis_timestamp * 1000;
 
     Ok(LaunchedRethNode {
         engine_handle,
         payload_builder_handle,
         genesis_hash,
         genesis_timestamp,
+        genesis_timestamp_millis,
         node,
         exit: Box::pin(node_exit_future),
     })
