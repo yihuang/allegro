@@ -26,9 +26,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ── 1. build (quietly) ──────────────────────────────────────
+# ── 1. build  ──────────────────────────────────────
 echo "=== building ==="
-cargo build -p allegro -p allegro-xtask -q 2>&1 | grep -v "^$" || true
+cargo build -p allegro -p allegro-xtask
 BINARY=target/debug/allegro
 XTASK=target/debug/allegro-xtask
 

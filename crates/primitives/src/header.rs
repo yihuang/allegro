@@ -151,14 +151,23 @@ pub struct AllegroHeader {
     /// Inner Ethereum [`Header`].
     pub inner: Header,
 
+    /// Millisecond-precision timestamp, monotonically increasing per block.
+    /// Always ≥ parent's `timestamp_millis`. Uses milliseconds since UNIX epoch.
+    pub timestamp_millis: u64,
+
     /// Consensus metadata. `None` for pre-consensus / genesis blocks.
     pub consensus_context: Option<AllegroConsensusContext>,
 }
 
 impl AllegroHeader {
-    pub fn new(inner: Header, consensus_context: Option<AllegroConsensusContext>) -> Self {
+    pub fn new(
+        inner: Header,
+        timestamp_millis: u64,
+        consensus_context: Option<AllegroConsensusContext>,
+    ) -> Self {
         Self {
             inner,
+            timestamp_millis,
             consensus_context,
         }
     }
@@ -266,6 +275,7 @@ impl From<Header> for AllegroHeader {
     fn from(inner: Header) -> Self {
         Self {
             inner,
+            timestamp_millis: 0,
             consensus_context: None,
         }
     }
@@ -284,6 +294,7 @@ mod tests {
                 timestamp: 1_700_000_000,
                 ..Default::default()
             },
+            timestamp_millis: 1_700_000_000_123,
             consensus_context: Some(AllegroConsensusContext {
                 epoch: 1,
                 view: 5,
@@ -303,6 +314,7 @@ mod tests {
                 number: 0,
                 ..Default::default()
             },
+            timestamp_millis: 0,
             consensus_context: None,
         };
         let encoded = alloy_rlp::encode(&header);
@@ -317,6 +329,7 @@ mod tests {
                 number: 42,
                 ..Default::default()
             },
+            timestamp_millis: 0,
             consensus_context: None,
         };
         let h1 = header.hash_slow();

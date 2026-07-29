@@ -452,6 +452,7 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: Option<Ret
                 metrics,
                 genesis_hash,
                 genesis_timestamp,
+                genesis_timestamp_millis: genesis_timestamp * 1000,
                 finalized_tx,
             },
             (votes, certs, resolver),

@@ -7,6 +7,7 @@
 //! See [`docs/reth-integration-plan.md`] for the full architecture and
 //! implementation status.
 
+pub mod allegro_consensus;
 pub mod builder;
 pub mod chainspec;
 pub mod finalizer;
