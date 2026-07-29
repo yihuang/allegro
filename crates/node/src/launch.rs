@@ -132,8 +132,7 @@ pub async fn launch(
         });
 
     // Build standard Ethereum components but with our relaxed-timestamp consensus.
-    let components = EthereumNode::components()
-        .consensus(AllegroConsensusBuilder);
+    let components = EthereumNode::components().consensus(AllegroConsensusBuilder);
 
     // Build add-ons with our custom engine validator (relaxed timestamp check).
     // Use the standard RpcAddOns with our custom PayloadValidatorBuilder.
@@ -141,16 +140,14 @@ pub async fn launch(
         _,
         reth_node_ethereum::EthereumEthApiBuilder,
         AllegroEngineValidatorBuilder,
-    >::new(
-        RpcAddOns::new(
-            EthereumEthApiBuilder::default(),
-            AllegroEngineValidatorBuilder,
-            reth_node_builder::rpc::BasicEngineApiBuilder::default(),
-            reth_node_builder::rpc::BasicEngineValidatorBuilder::default(),
-            Identity::new(),
-            Identity::new(),
-        )
-    );
+    >::new(RpcAddOns::new(
+        EthereumEthApiBuilder::default(),
+        AllegroEngineValidatorBuilder,
+        reth_node_builder::rpc::BasicEngineApiBuilder::default(),
+        reth_node_builder::rpc::BasicEngineValidatorBuilder::default(),
+        Identity::new(),
+        Identity::new(),
+    ));
 
     let NodeHandle {
         node,
