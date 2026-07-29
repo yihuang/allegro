@@ -99,6 +99,39 @@ impl LaunchedRethNode {
     }
 }
 
+/// Extract handles and wrap the launched node (kept alive) with its exit future.
+fn into_launched(
+    node: AllegroFullNode,
+    exit: impl Future<Output = eyre::Result<()>> + Send + 'static,
+) -> LaunchedRethNode {
+    let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
+    let payload_builder_handle = node.payload_builder_handle.clone();
+    let chain_spec = node.chain_spec();
+    LaunchedRethNode {
+        engine_handle,
+        payload_builder_handle,
+        genesis_hash: chain_spec.genesis_hash(),
+        genesis_timestamp: chain_spec.genesis_timestamp(),
+        node,
+        exit: Box::pin(exit),
+    }
+}
+
+/// Launch a reth node from the reth CLI's prepared builder (`allegro node`).
+pub async fn launch_with_builder(
+    builder: reth_node_builder::WithLaunchContext<NodeBuilder<reth_db::DatabaseEnv, ChainSpec>>,
+) -> eyre::Result<LaunchedRethNode> {
+    let NodeHandle {
+        node,
+        node_exit_future,
+    } = builder
+        .launch_node(EthereumNode::default())
+        .await
+        .wrap_err("failed to launch reth node")?;
+
+    Ok(into_launched(node, node_exit_future))
+}
+
 /// Launch a reth execution node with the given configuration.
 ///
 /// The node is configured with:
@@ -155,21 +188,5 @@ pub async fn launch(
         .await
         .wrap_err("failed to launch reth node")?;
 
-    // Extract handles — cheap channel-sender clones; the `node` itself is
-    // moved into `LaunchedRethNode` to keep the RPC servers alive.
-    let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
-    let payload_builder_handle = node.payload_builder_handle.clone();
-
-    let chain_spec = node.chain_spec();
-    let genesis_hash = chain_spec.genesis_hash();
-    let genesis_timestamp = chain_spec.genesis_timestamp();
-
-    Ok(LaunchedRethNode {
-        engine_handle,
-        payload_builder_handle,
-        genesis_hash,
-        genesis_timestamp,
-        node,
-        exit: Box::pin(node_exit_future),
-    })
+    Ok(into_launched(node, node_exit_future))
 }

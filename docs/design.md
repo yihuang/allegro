@@ -435,8 +435,8 @@ Uses commonware's `lookup::Network` with Ed25519 identity keys derived from
 | 3     | Blocks        | 128 / s    |
 
 Peer addresses are exchanged through the validator set constructed from CLI
-`--node`/`--peer` arguments.  Both sides must track each other—a missing
-`--peer` on one node causes the other's connection to be rejected by the
+`--consensus.node-index`/`--consensus.peer` arguments.  Both sides must track each other—a missing
+`--consensus.peer` on one node causes the other's connection to be rejected by the
 bouncer callback (`tracker.acceptable`).
 
 ### 6.2 Reth P2P
@@ -632,15 +632,12 @@ pub fn start_simplex_engine<TContext, …>(
 ### 9.5 CLI
 
 ```
-allegro --execution <reth|stub>     # default: reth
-        --node <N>                  # validator index
-        --listen <ADDR>             # consensus p2p
-        --peer <ADDR>               # must appear on every node for each peer
-        --leader-timeout <MS>       # default: 2000
-        --datadir <PATH>            # reth mdbx database
-        --rpc-port <PORT>           # default: 8545
-        --authrpc-port <PORT>       # default: 8551
-        --reth-p2p-port <PORT>      # default: 30303
+allegro node [reth flags] [--consensus.* flags]   # reth's CLI + consensus extension
+allegro stub [--consensus.* flags]                # standalone stub mode (no reth)
+
+# consensus flags: --consensus.node-index, --consensus.listen-address,
+# --consensus.peer (must appear on every node for each peer),
+# --consensus.leader-timeout, --consensus.cert-timeout, ...
 ```
 
 ---
@@ -679,7 +676,7 @@ cargo run -p allegro-xtask -- genesis \
 ### Validator keys
 
 Validators use Ed25519 keys derived from `PrivateKey::from_seed(i as u64)`,
-which is exactly what the allegro binary does when given `--node <i>`.
+which is exactly what the allegro binary does when given `--consensus.node-index <i>`.
 The xtask key files and the binary's key derivation are **deterministically
 identical** — no key material needs to be shared.
 
