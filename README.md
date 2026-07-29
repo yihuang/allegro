@@ -44,7 +44,8 @@ cargo run -p allegro-xtask -- genesis \
     --validators 4 --base-port 13000 --output ./devnet
 ```
 
-Produces `genesis.json`, `validators.json`, and per-node key files.
+Produces `genesis.json` and `validators.json` (node identity is derived
+from the validator index; no key files are needed).
 
 ### Cli reference
 

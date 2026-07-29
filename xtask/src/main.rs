@@ -1,7 +1,7 @@
 //! allegro-xtask — genesis config generator for devnets.
 //!
-//! Generates a `genesis.json` consumable by the allegro binary (`--genesis` flag),
-//! along with per-validator key material and a validators manifest.
+//! Generates a `genesis.json` consumable by the allegro binary (`--chain` flag),
+//! along with a validators manifest.
 //!
 //! Funded accounts are derived from the standard Anvil mnemonic:
 //!   "test test test test test test test test test test test junk"
@@ -36,10 +36,12 @@ enum Cli {
 
 #[derive(Debug, clap::Args)]
 struct GenesisCmd {
-    /// Number of validators.
+    /// Number of validators, or a comma-separated list of `ip:port` consensus
+    /// sockets (one per validator, e.g. `127.0.0.1:8000,127.0.0.1:8010`).
     #[arg(long, default_value = "4")]
-    validators: u16,
-    /// Base port for p2p (each validator gets port+index).
+    validators: String,
+    /// Base port for p2p when `--validators` is a count (each validator gets
+    /// port+index); ignored when explicit sockets are given.
     #[arg(long, default_value = "13000")]
     base_port: u16,
     /// Chain ID for the genesis config.
@@ -74,16 +76,33 @@ impl GenesisCmd {
             .wrap_err_with(|| format!("failed to create {}", output.display()))?;
 
         // ── Generate validators ──
+        // `--validators` is either a count (sockets derived from --base-port)
+        // or an explicit comma-separated `ip:port` list.
+        let sockets: Vec<String> = match self.validators.parse::<u16>() {
+            Ok(n) => (0..n)
+                .map(|i| format!("127.0.0.1:{}", self.base_port + i))
+                .collect(),
+            Err(_) => self
+                .validators
+                .split(',')
+                .map(|s| {
+                    let s = s.trim();
+                    s.parse::<std::net::SocketAddr>()
+                        .map(|addr| addr.to_string())
+                        .wrap_err_with(|| format!("invalid validator socket {s:?}"))
+                })
+                .collect::<eyre::Result<_>>()?,
+        };
         let mut validators = Vec::new();
-        for i in 0..self.validators {
+        for (i, socket) in sockets.iter().enumerate() {
+            let i = i as u16;
             let sk = PrivateKey::from_seed(i as u64);
             let pk = sk.public_key();
-            let port = self.base_port + i;
             validators.push(ValidatorOutput {
                 index: i,
                 public_key: hex::encode(pk.as_ref()),
-                ingress: format!("127.0.0.1:{port}"),
-                egress: format!("127.0.0.1:{port}"),
+                ingress: socket.clone(),
+                egress: socket.clone(),
             });
         }
 
@@ -181,32 +200,14 @@ impl GenesisCmd {
             val_path.display()
         );
 
-        // Per-node key files -- each node-"dir" gets a "key" file with its seed
-        for v in &validators {
-            let node_dir = output.join(format!("node-{}", v.index));
-            std::fs::create_dir_all(&node_dir)
-                .wrap_err_with(|| format!("create {}", node_dir.display()))?;
-            let key_path = node_dir.join("key");
-            let seed_hex = format!("0x{:016x}", v.index as u64);
-            std::fs::write(&key_path, &seed_hex)
-                .wrap_err_with(|| format!("write {}", key_path.display()))?;
-        }
-
         println!();
-        println!("To start a node (validators are embedded in genesis.json):");
+        println!("To start a node (validators and their peers are embedded in genesis.json):");
         for v in &validators {
-            let peer_args: String = validators
-                .iter()
-                .filter(|o| o.index != v.index)
-                .map(|o| format!("--peer {}", o.ingress))
-                .collect::<Vec<_>>()
-                .join(" ");
             println!(
-                "  allegro --node {} --listen {} {} --genesis {}",
+                "  allegro node --chain {} --consensus.node-index {} --consensus.listen-address {}",
+                genesis_path.display(),
                 v.index,
                 v.ingress,
-                peer_args,
-                genesis_path.display(),
             );
         }
 
@@ -219,10 +220,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn xtask_accepts_explicit_validator_sockets() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = GenesisCmd {
+            validators: "127.0.0.1:8000,127.0.0.1:8010".to_string(),
+            base_port: 13000,
+            output: dir.path().to_path_buf(),
+            chain_id: 1337,
+        };
+        cmd.run().unwrap();
+        let content = std::fs::read_to_string(dir.path().join("genesis.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let validators = value["validators"].as_array().unwrap();
+        assert_eq!(validators.len(), 2);
+        assert_eq!(validators[0]["ingress"], "127.0.0.1:8000");
+        assert_eq!(validators[1]["ingress"], "127.0.0.1:8010");
+    }
+
+    #[test]
     fn xtask_generates_valid_json() {
         let dir = tempfile::tempdir().unwrap();
         let cmd = GenesisCmd {
-            validators: 2,
+            validators: "2".to_string(),
             base_port: 13000,
             output: dir.path().to_path_buf(),
             chain_id: 1337,

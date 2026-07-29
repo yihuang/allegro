@@ -662,7 +662,6 @@ cargo run -p allegro-xtask -- genesis \
 |------|----------|
 | `genesis.json` | Full `alloy_genesis::Genesis` with `ChainConfig`, alloc, nonce |
 | `validators.json` | Per-validator index, Ed25519 public key, p2p address |
-| `node-{i}/key` | Seed hex (`0x0000000000000000`..) matching simplex `from_seed(i)` |
 
 ### Genesis configuration
 
