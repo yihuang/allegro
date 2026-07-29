@@ -79,9 +79,17 @@ impl GenesisCmd {
         // `--validators` is either a count (sockets derived from --base-port)
         // or an explicit comma-separated `ip:port` list.
         let sockets: Vec<String> = match self.validators.parse::<u16>() {
-            Ok(n) => (0..n)
-                .map(|i| format!("127.0.0.1:{}", self.base_port + i))
-                .collect(),
+            Ok(n) => {
+                if n > 0 && self.base_port.checked_add(n - 1).is_none() {
+                    eyre::bail!(
+                        "--base-port {} with {n} validators exceeds the max port 65535",
+                        self.base_port
+                    );
+                }
+                (0..n)
+                    .map(|i| format!("127.0.0.1:{}", self.base_port + i))
+                    .collect()
+            }
             Err(_) => self
                 .validators
                 .split(',')
@@ -93,6 +101,9 @@ impl GenesisCmd {
                 })
                 .collect::<eyre::Result<_>>()?,
         };
+        if sockets.len() > u16::MAX as usize {
+            eyre::bail!("too many validators: {} (max 65535)", sockets.len());
+        }
         let mut validators = Vec::new();
         for (i, socket) in sockets.iter().enumerate() {
             let i = i as u16;
@@ -218,6 +229,32 @@ impl GenesisCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xtask_rejects_base_port_overflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = GenesisCmd {
+            validators: "2".to_string(),
+            base_port: 65535,
+            output: dir.path().to_path_buf(),
+            chain_id: 1337,
+        };
+        let err = cmd.run().unwrap_err();
+        assert!(err.to_string().contains("exceeds the max port"));
+    }
+
+    #[test]
+    fn xtask_rejects_too_many_validator_sockets() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = GenesisCmd {
+            validators: vec!["127.0.0.1:1"; u16::MAX as usize + 1].join(","),
+            base_port: 13000,
+            output: dir.path().to_path_buf(),
+            chain_id: 1337,
+        };
+        let err = cmd.run().unwrap_err();
+        assert!(err.to_string().contains("too many validators"));
+    }
 
     #[test]
     fn xtask_accepts_explicit_validator_sockets() {

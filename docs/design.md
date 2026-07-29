@@ -677,8 +677,7 @@ cargo run -p allegro-xtask -- genesis \
 
 Validators use Ed25519 keys derived from `PrivateKey::from_seed(i as u64)`,
 which is exactly what the allegro binary does when given `--consensus.node-index <i>`.
-The xtask key files and the binary's key derivation are **deterministically
-identical** — no key material needs to be shared.
+No key files are generated: the binary derives the same keys deterministically from the validator index, so no key material needs to be shared.
 
 ---
 
