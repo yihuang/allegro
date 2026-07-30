@@ -37,12 +37,6 @@ use crate::executor::{BuildPayloadRequest, PayloadBuilder, ValidationResult};
 use crate::metrics::ConsensusMetrics;
 use crate::validators::ValidatorSet;
 
-/// Maximum tolerated clock drift for proposed block timestamps.
-///
-/// Verify rejects blocks stamped further than this beyond the local clock
-/// (mirrors Ethereum's pre-merge 15s allowed future block time).
-const ALLOWED_TIMESTAMP_DRIFT_SECS: u64 = 15;
-
 // ── Block info tracking ────────────────────────────────────
 
 /// Info about a block tracked by digest.
@@ -374,19 +368,15 @@ impl Actor {
             bytes
         };
 
-        // Timestamp (seconds) is non-decreasing: equal neighbours are allowed
-        // at sub-second block rates (validation is relaxed to `>=`).
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let timestamp = std::cmp::max(now, parent_timestamp);
-
-        // Millisecond timestamp is non-decreasing relative to the parent.
         let now_millis = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
+        let now = now_millis / 1000;
+        // Timestamp (seconds) is non-decreasing: equal neighbours are allowed
+        // at sub-second block rates (validation is relaxed to `>=`).
+        let timestamp = std::cmp::max(now, parent_timestamp);
+        // Millisecond timestamp is non-decreasing relative to the parent.
         let timestamp_millis = std::cmp::max(now_millis, parent_timestamp_millis);
 
         // Delegate block building to the payload builder
@@ -518,23 +508,12 @@ impl Actor {
             .await
         {
             Ok(ValidationResult::Valid(meta)) => {
-                // Reject timestamps beyond wall clock + drift allowance: with
-                // the relaxed non-decreasing rule, max(now, parent) would
-                // otherwise ratchet one leader's far-future timestamp into
-                // every descendant block.
-                let now = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                if meta.timestamp > now + ALLOWED_TIMESTAMP_DRIFT_SECS
-                    || meta.timestamp_millis > (now + ALLOWED_TIMESTAMP_DRIFT_SECS) * 1000
-                {
+                if meta.timestamp_millis / 1000 != meta.timestamp {
                     warn!(
                         payload = %msg.payload,
                         timestamp = meta.timestamp,
                         timestamp_millis = meta.timestamp_millis,
-                        now,
-                        "verify failed: timestamp too far in the future"
+                        "verify failed: timestamp_millis don't match timestamp"
                     );
                     if let Some(ref m) = self.metrics {
                         m.inc_failed_validations();
@@ -542,6 +521,7 @@ impl Actor {
                     let _ = msg.response.send(false);
                     return;
                 }
+
                 debug!(payload = %msg.payload, "verify succeeded");
                 // Record block info for future parent lookups (critical for reth mode)
                 match self.block_info.write() {

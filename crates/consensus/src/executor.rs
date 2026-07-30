@@ -342,6 +342,20 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
         ));
     }
 
+    // Reject blocks with timestamps too far in the future
+    // (reth's engine API does this natively; the stub mirrors it for test consistency)
+    const ALLOWED_TIMESTAMP_DRIFT_SECS: u64 = 15;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if header.inner.timestamp > now + ALLOWED_TIMESTAMP_DRIFT_SECS {
+        return Ok(ValidationResult::Invalid(format!(
+            "timestamp {} is too far in the future (now: {}, max drift: {}s)",
+            header.inner.timestamp, now, ALLOWED_TIMESTAMP_DRIFT_SECS
+        )));
+    }
+
     // Compute hash and return metadata.
     let hash = header.hash_slow();
 
