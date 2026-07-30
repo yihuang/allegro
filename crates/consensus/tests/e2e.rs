@@ -131,11 +131,11 @@ async fn test_consensus_block_production() {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  Test: far-future timestamps are rejected on verify
+//  Test: timestamp_millis must agree with the seconds timestamp
 // ═══════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn test_verify_rejects_far_future_timestamp() {
+async fn test_verify_rejects_inconsistent_timestamp_millis() {
     use allegro_consensus::executor::build_empty_block_internal;
     use std::time::SystemTime;
 
@@ -154,42 +154,49 @@ async fn test_verify_rejects_far_future_timestamp() {
         bytes
     };
 
-    let verify_crafted = |mailbox: &mut Mailbox, timestamp: u64, view: u64| {
-        let payload = build_empty_block_internal(
-            genesis.0,
-            0,
-            1,
-            0,
-            view,
-            proposer,
-            timestamp,
-            timestamp * 1000,
-        )
-        .expect("build crafted block");
-        let digest = Digest(payload.block_hash);
-        received
-            .write()
-            .unwrap()
-            .insert(digest, payload.block_bytes);
-        let ctx = Context {
-            round: Round::new(Epoch::new(0), View::new(view)),
-            leader: entries[1].public_key.clone(),
-            parent: (View::new(0), genesis),
+    let verify_crafted =
+        |mailbox: &mut Mailbox, timestamp: u64, timestamp_millis: u64, view: u64| {
+            let payload = build_empty_block_internal(
+                genesis.0,
+                0,
+                1,
+                0,
+                view,
+                proposer,
+                timestamp,
+                timestamp_millis,
+            )
+            .expect("build crafted block");
+            let digest = Digest(payload.block_hash);
+            received
+                .write()
+                .unwrap()
+                .insert(digest, payload.block_bytes);
+            let ctx = Context {
+                round: Round::new(Epoch::new(0), View::new(view)),
+                leader: entries[1].public_key.clone(),
+                parent: (View::new(0), genesis),
+            };
+            let mut mb = mailbox.clone();
+            async move { mb.verify(ctx, digest).await.await.unwrap() }
         };
-        let mut mb = mailbox.clone();
-        async move { mb.verify(ctx, digest).await.await.unwrap() }
-    };
 
-    // Timestamp pinned far beyond wall clock + drift allowance → rejected
+    // Millis pinned an hour past the seconds field → rejected
     assert!(
-        !verify_crafted(&mut mailbox, now + 3600, 1).await,
-        "far-future timestamp must be rejected"
+        !verify_crafted(&mut mailbox, now, (now + 3600) * 1000, 1).await,
+        "timestamp_millis disagreeing with timestamp must be rejected"
     );
 
-    // Timestamp within the drift allowance → accepted
+    // Millis regressed below the seconds field → rejected
     assert!(
-        verify_crafted(&mut mailbox, now + 1, 2).await,
-        "near-now timestamp must be accepted"
+        !verify_crafted(&mut mailbox, now, (now - 5) * 1000, 2).await,
+        "lagging timestamp_millis must be rejected"
+    );
+
+    // Consistent, including sub-second precision → accepted
+    assert!(
+        verify_crafted(&mut mailbox, now, now * 1000 + 999, 3).await,
+        "consistent timestamp_millis must be accepted"
     );
 }
 

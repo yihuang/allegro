@@ -368,6 +368,8 @@ impl Actor {
             bytes
         };
 
+        // One clock reading for both fields so they stay consistent
+        // (timestamp_millis / 1000 == timestamp, which verify enforces).
         let now_millis = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -508,6 +510,12 @@ impl Actor {
             .await
         {
             Ok(ValidationResult::Valid(meta)) => {
+                // The seconds field is the execution layer's to validate;
+                // the invariant only consensus can check is that the
+                // millisecond field agrees with it. Without this, a proposer
+                // could pin timestamp_millis arbitrarily far ahead and
+                // max(now_millis, parent) would ratchet it into every
+                // descendant block.
                 if meta.timestamp_millis / 1000 != meta.timestamp {
                     warn!(
                         payload = %msg.payload,
