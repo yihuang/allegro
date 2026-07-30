@@ -24,6 +24,9 @@ pub struct BuiltPayload {
     pub block_hash: B256,
     /// Block number.
     pub block_number: u64,
+    /// Millisecond timestamp recorded in consensus bookkeeping. Deterministic:
+    /// every node derives the same value for the same block.
+    pub timestamp_millis: u64,
 }
 
 /// Metadata about a valid block returned from validation.
@@ -35,7 +38,7 @@ pub struct BlockMeta {
     pub number: u64,
     /// Block timestamp (seconds since UNIX epoch).
     pub timestamp: u64,
-    /// Millisecond-precision timestamp, monotonically increasing.
+    /// Millisecond-precision timestamp, deterministic per block.
     pub timestamp_millis: u64,
 }
 
@@ -134,7 +137,8 @@ pub struct BuildPayloadRequest {
     pub proposer: [u8; 32],
     /// Block timestamp (seconds since UNIX epoch) — Ethereum standard field.
     pub timestamp: u64,
-    /// Millisecond-precision timestamp — must be ≥ parent's `timestamp_millis`.
+    /// Millisecond-precision timestamp — the proposer guarantees it is
+    /// ≥ the parent's `timestamp_millis`.
     pub timestamp_millis: u64,
     /// Parent block's millisecond timestamp, for monotonicity enforcement.
     pub parent_timestamp_millis: u64,
@@ -318,6 +322,7 @@ pub fn build_empty_block_internal(
     let block_bytes = alloy_rlp::encode(&block);
 
     Ok(BuiltPayload {
+        timestamp_millis,
         block_bytes,
         block_hash,
         block_number: parent_number + 1,

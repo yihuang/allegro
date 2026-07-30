@@ -138,6 +138,8 @@ pub fn create_engine_payload_builder(
                     block_bytes,
                     block_hash,
                     block_number,
+                    // Same derivation as the validate closure below.
+                    timestamp_millis: block.header.timestamp * 1000,
                 })
             })
         }),
@@ -167,15 +169,17 @@ pub fn create_engine_payload_builder(
 
                 match payload_status.status {
                     alloy_rpc_types_engine::PayloadStatusEnum::Valid => {
-                        // In reth mode, the on-chain block is a standard Ethereum block
-                        // (EthBlock), so there is no AllegroHeader timestamp_millis.
-                        // The consensus actor tracks millisecond monotonicity via
-                        // the application-level BlockInfo, not the on-chain header.
+                        // In reth mode the on-chain block is a standard Ethereum
+                        // block (EthBlock) with no AllegroHeader timestamp_millis,
+                        // so derive a deterministic value from the seconds
+                        // timestamp. This keeps the BlockInfo bookkeeping
+                        // identical on every node — the proposer must not record
+                        // a wall-clock value its verifiers can't reproduce.
                         Ok(ValidationResult::Valid(BlockMeta {
                             hash,
                             number,
                             timestamp,
-                            timestamp_millis: 0,
+                            timestamp_millis: timestamp * 1000,
                         }))
                     }
                     alloy_rpc_types_engine::PayloadStatusEnum::Invalid { validation_error } => {

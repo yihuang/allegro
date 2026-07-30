@@ -48,7 +48,7 @@ pub struct BlockInfo {
     pub proposer: PublicKey,
     /// Block timestamp (seconds since epoch).
     pub timestamp: u64,
-    /// Block timestamp (milliseconds since epoch), monotonically increasing.
+    /// Block timestamp (milliseconds since epoch), non-decreasing per chain.
     pub timestamp_millis: u64,
 }
 
@@ -368,15 +368,15 @@ impl Actor {
             bytes
         };
 
-        // Timestamp (seconds) must be strictly greater than parent's
-        // (reth Engine API requirement).
+        // Timestamp (seconds) is non-decreasing: equal neighbours are allowed
+        // at sub-second block rates (validation is relaxed to `>=`).
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let timestamp = std::cmp::max(now, parent_timestamp);
 
-        // Millisecond timestamp must be monotonically increasing.
+        // Millisecond timestamp is non-decreasing relative to the parent.
         let now_millis = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -398,11 +398,12 @@ impl Actor {
         };
         let built = self.payload_builder.build_payload(&request).await;
 
-        let (block_bytes, block_hash, block_number) = match built {
+        let (block_bytes, block_hash, block_number, built_timestamp_millis) = match built {
             Ok(payload) => (
                 payload.block_bytes,
                 payload.block_hash,
                 payload.block_number,
+                payload.timestamp_millis,
             ),
             Err(e) => {
                 error!(error = %e, "payload builder failed");
@@ -421,7 +422,8 @@ impl Actor {
 
         let digest = AllegroDigest(block_hash);
 
-        // Track block info (including timestamp for parent lookups)
+        // Track block info (including timestamp for parent lookups). Use the
+        // builder-reported millis so this record matches what verifiers derive.
         match self.block_info.write() {
             Ok(mut guard) => {
                 guard.insert(
@@ -432,7 +434,7 @@ impl Actor {
                         view: msg.round.view().get(),
                         proposer: msg.leader.clone(),
                         timestamp,
-                        timestamp_millis,
+                        timestamp_millis: built_timestamp_millis,
                     },
                 );
             }
