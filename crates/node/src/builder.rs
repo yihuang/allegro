@@ -140,6 +140,7 @@ pub fn create_engine_payload_builder(
                     block_number,
                     // Same derivation as the validate closure below.
                     timestamp_millis: block.header.timestamp.saturating_mul(1000),
+                })
             })
         }),
         // ═══════════════════════════════════════════════════════
