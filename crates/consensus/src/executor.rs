@@ -140,8 +140,6 @@ pub struct BuildPayloadRequest {
     /// Millisecond-precision timestamp — the proposer guarantees it is
     /// ≥ the parent's `timestamp_millis`.
     pub timestamp_millis: u64,
-    /// Parent block's millisecond timestamp, for monotonicity enforcement.
-    pub parent_timestamp_millis: u64,
 }
 
 /// Validate block request parameters.

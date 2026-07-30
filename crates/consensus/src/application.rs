@@ -394,7 +394,6 @@ impl Actor {
             proposer: proposer_bytes,
             timestamp,
             timestamp_millis,
-            parent_timestamp_millis,
         };
         let built = self.payload_builder.build_payload(&request).await;
 

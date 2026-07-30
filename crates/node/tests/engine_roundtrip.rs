@@ -84,7 +84,6 @@ async fn build_validate_finalize_first_block() {
             proposer: [0u8; 32],
             timestamp,
             timestamp_millis,
-            parent_timestamp_millis: 0,
         }),
     )
     .await
@@ -150,7 +149,6 @@ async fn build_validate_finalize_first_block() {
             proposer: [0u8; 32],
             timestamp: timestamp2,
             timestamp_millis: timestamp2_millis,
-            parent_timestamp_millis: timestamp_millis,
         }),
     )
     .await
