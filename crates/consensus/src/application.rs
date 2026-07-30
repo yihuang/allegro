@@ -37,6 +37,12 @@ use crate::executor::{BuildPayloadRequest, PayloadBuilder, ValidationResult};
 use crate::metrics::ConsensusMetrics;
 use crate::validators::ValidatorSet;
 
+/// Maximum tolerated clock drift for proposed block timestamps.
+///
+/// Verify rejects blocks stamped further than this beyond the local clock
+/// (mirrors Ethereum's pre-merge 15s allowed future block time).
+const ALLOWED_TIMESTAMP_DRIFT_SECS: u64 = 15;
+
 // ── Block info tracking ────────────────────────────────────
 
 /// Info about a block tracked by digest.
@@ -512,6 +518,30 @@ impl Actor {
             .await
         {
             Ok(ValidationResult::Valid(meta)) => {
+                // Reject timestamps beyond wall clock + drift allowance: with
+                // the relaxed non-decreasing rule, max(now, parent) would
+                // otherwise ratchet one leader's far-future timestamp into
+                // every descendant block.
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                if meta.timestamp > now + ALLOWED_TIMESTAMP_DRIFT_SECS
+                    || meta.timestamp_millis > (now + ALLOWED_TIMESTAMP_DRIFT_SECS) * 1000
+                {
+                    warn!(
+                        payload = %msg.payload,
+                        timestamp = meta.timestamp,
+                        timestamp_millis = meta.timestamp_millis,
+                        now,
+                        "verify failed: timestamp too far in the future"
+                    );
+                    if let Some(ref m) = self.metrics {
+                        m.inc_failed_validations();
+                    }
+                    let _ = msg.response.send(false);
+                    return;
+                }
                 debug!(payload = %msg.payload, "verify succeeded");
                 // Record block info for future parent lookups (critical for reth mode)
                 match self.block_info.write() {

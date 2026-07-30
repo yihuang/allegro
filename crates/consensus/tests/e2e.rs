@@ -49,8 +49,11 @@ fn make_validator(seed: u8, port: u16) -> ValidatorEntry {
     }
 }
 
-fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
+fn spawn_actor(
+    validators: ValidatorSet,
+) -> (Mailbox, oneshot::Sender<()>, app_actor::ReceivedBlocks) {
     let (pending, received, block_info) = app_actor::new_block_stores();
+    let received_handle = received.clone();
     let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(StubPayloadBuilder::new());
     let (actor, mailbox) = Actor::new(
         validators,
@@ -73,7 +76,7 @@ fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
             _ = actor.run() => {}
         }
     });
-    (mailbox, shutdown_tx)
+    (mailbox, shutdown_tx, received_handle)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -84,7 +87,7 @@ fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
 async fn test_consensus_block_production() {
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3000 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
-    let (mut mailbox, _shutdown) = spawn_actor(validators.clone());
+    let (mut mailbox, _shutdown, _received) = spawn_actor(validators.clone());
 
     let genesis = mailbox.genesis(Epoch::new(0)).await;
     assert_eq!(genesis, Digest(B256::ZERO));
@@ -125,6 +128,69 @@ async fn test_consensus_block_production() {
 
     let rx = mailbox.verify(ctx2.clone(), b2).await;
     assert!(rx.await.unwrap());
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Test: far-future timestamps are rejected on verify
+// ═══════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_verify_rejects_far_future_timestamp() {
+    use allegro_consensus::executor::build_empty_block_internal;
+    use std::time::SystemTime;
+
+    let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3200 + i as u16)).collect();
+    let validators = ValidatorSet::from_entries(&entries);
+    let (mut mailbox, _shutdown, received) = spawn_actor(validators.clone());
+
+    let genesis = mailbox.genesis(Epoch::new(0)).await;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let proposer = {
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(entries[1].public_key.as_ref());
+        bytes
+    };
+
+    let verify_crafted = |mailbox: &mut Mailbox, timestamp: u64, view: u64| {
+        let payload = build_empty_block_internal(
+            genesis.0,
+            0,
+            1,
+            0,
+            view,
+            proposer,
+            timestamp,
+            timestamp * 1000,
+        )
+        .expect("build crafted block");
+        let digest = Digest(payload.block_hash);
+        received
+            .write()
+            .unwrap()
+            .insert(digest, payload.block_bytes);
+        let ctx = Context {
+            round: Round::new(Epoch::new(0), View::new(view)),
+            leader: entries[1].public_key.clone(),
+            parent: (View::new(0), genesis),
+        };
+        let mut mb = mailbox.clone();
+        async move { mb.verify(ctx, digest).await.await.unwrap() }
+    };
+
+    // Timestamp pinned far beyond wall clock + drift allowance → rejected
+    assert!(
+        !verify_crafted(&mut mailbox, now + 3600, 1).await,
+        "far-future timestamp must be rejected"
+    );
+
+    // Timestamp within the drift allowance → accepted
+    assert!(
+        verify_crafted(&mut mailbox, now + 1, 2).await,
+        "near-now timestamp must be accepted"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
