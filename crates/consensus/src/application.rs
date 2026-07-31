@@ -48,7 +48,7 @@ pub struct BlockInfo {
     pub proposer: PublicKey,
     /// Block timestamp (seconds since epoch).
     pub timestamp: u64,
-    /// Block timestamp (milliseconds since epoch), non-decreasing per chain.
+    /// Block timestamp (milliseconds since epoch), monotonically increasing.
     pub timestamp_millis: u64,
 }
 
