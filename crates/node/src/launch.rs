@@ -127,7 +127,7 @@ macro_rules! into_launched {
             genesis_timestamp,
             genesis_timestamp_millis: genesis_timestamp * 1000,
             // Keep the node alive (dropping it would shut down JSON-RPC servers).
-            _keep_alive: Arc::new(node) as Arc<dyn std::any::Any + Send + Sync>,
+            _keep_alive: Arc::new(node),
             exit: Box::pin($exit),
         }
     }};
