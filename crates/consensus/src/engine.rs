@@ -38,7 +38,6 @@ use allegro_primitives::Digest as AllegroDigest;
 use crate::application::{self, BlockInfoMap, PendingBlocks, ReceivedBlocks};
 use crate::config::ConsensusConfig;
 use crate::error::ConsensusError;
-use crate::executor::StubPayloadBuilder;
 use crate::metrics::ConsensusMetrics;
 use crate::validators::ValidatorSet;
 
@@ -301,11 +300,11 @@ pub struct EngineConfig {
     pub proposals: Arc<Mutex<Vec<AllegroDigest>>>,
     /// Namespace partition for on-disk storage isolation.
     pub partition: String,
-    /// Optional payload builder. If `None`, a [`StubPayloadBuilder`] is used.
-    pub payload_builder: Option<std::sync::Arc<dyn crate::executor::PayloadBuilder>>,
+    /// Payload builder: builds and validates blocks via the execution layer.
+    pub payload_builder: Arc<dyn crate::executor::PayloadBuilder>,
     /// Optional metrics collector.
     pub metrics: Option<ConsensusMetrics>,
-    /// Genesis block hash (B256::ZERO for stub mode, real chainspec hash for reth).
+    /// Genesis block hash (from the chainspec).
     pub genesis_hash: B256,
     /// Genesis block timestamp.
     pub genesis_timestamp: u64,
@@ -313,65 +312,6 @@ pub struct EngineConfig {
     pub finalized_tx: Option<futures::channel::mpsc::Sender<AllegroDigest>>,
     /// Genesis block millisecond timestamp.
     pub genesis_timestamp_millis: u64,
-}
-
-impl EngineConfig {
-    /// Create a new engine configuration with the given signing key and validators.
-    pub fn new(signing_key: PrivateKey, validators: ValidatorSet) -> Self {
-        Self {
-            signing_key,
-            validators,
-            consensus_config: ConsensusConfig::default(),
-            proposals: Arc::new(Mutex::new(Vec::new())),
-            partition: ConsensusConfig::default().partition,
-            payload_builder: None,
-            metrics: None,
-            genesis_hash: B256::ZERO,
-            genesis_timestamp: 0,
-            finalized_tx: None,
-            genesis_timestamp_millis: 0,
-        }
-    }
-
-    /// Set the consensus configuration.
-    pub fn with_consensus_config(mut self, config: ConsensusConfig) -> Self {
-        self.consensus_config = config;
-        self
-    }
-
-    /// Set the payload builder.
-    pub fn with_payload_builder(
-        mut self,
-        builder: Arc<dyn crate::executor::PayloadBuilder>,
-    ) -> Self {
-        self.payload_builder = Some(builder);
-        self
-    }
-
-    /// Set the metrics collector.
-    pub fn with_metrics(mut self, metrics: ConsensusMetrics) -> Self {
-        self.metrics = Some(metrics);
-        self
-    }
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        let cfg = ConsensusConfig::default();
-        Self {
-            signing_key: PrivateKey::from_seed(0),
-            validators: ValidatorSet::new(),
-            consensus_config: cfg.clone(),
-            proposals: Arc::new(Mutex::new(Vec::new())),
-            partition: cfg.partition,
-            payload_builder: None,
-            metrics: None,
-            genesis_hash: B256::ZERO,
-            genesis_timestamp: 0,
-            genesis_timestamp_millis: 0,
-            finalized_tx: None,
-        }
-    }
 }
 
 // ── Entry point ────────────────────────────────────────────
@@ -468,11 +408,6 @@ where
         metrics.clone(),
     );
 
-    // Use the provided payload builder or fall back to the stub (empty blocks)
-    let payload_builder: std::sync::Arc<dyn crate::executor::PayloadBuilder> = config
-        .payload_builder
-        .unwrap_or_else(|| std::sync::Arc::new(StubPayloadBuilder::new()));
-
     // Create the application actor (registers genesis block info internally)
     let (mut actor, mailbox) = application::Actor::new(
         config.validators,
@@ -481,7 +416,7 @@ where
         pending_blocks,
         received_blocks,
         block_info.clone(),
-        payload_builder,
+        config.payload_builder,
         metrics.clone(),
         config.genesis_hash,
         config.genesis_timestamp,

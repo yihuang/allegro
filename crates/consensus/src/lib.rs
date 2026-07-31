@@ -10,7 +10,7 @@
 //! - `config` — Tunable consensus parameters with production defaults
 //! - `engine` — Simplex engine bootstrap with p2p, block relay, and persistence
 //! - `error` — Typed errors for the consensus crate
-//! - `executor` — Payload builder abstraction (stub, engine API)
+//! - `executor` — Payload builder abstraction over reth's engine API
 //! - `metrics` — Consensus metrics counters
 //! - `validators` — Ed25519 validator set management
 
@@ -30,10 +30,9 @@ pub use block::Block;
 pub use engine::{start_simplex_engine, EngineConfig, StartedEngine};
 pub use error::ConsensusError;
 pub use executor::{
-    build_empty_block_internal, build_payload_attributes, build_payload_attributes_from_request,
-    create_reth_payload_builder, BlockMeta, BuildPayloadRequest, BuiltPayload,
-    EngineApiPayloadBuilder, PayloadBuilder, StubPayloadBuilder, ValidateBlockRequest,
-    ValidationResult,
+    build_payload_attributes, build_payload_attributes_from_request, create_reth_payload_builder,
+    BlockMeta, BuildPayloadRequest, BuiltPayload, EngineApiPayloadBuilder, PayloadBuilder,
+    ValidateBlockRequest, ValidationResult,
 };
 pub use metrics::ConsensusMetrics;
 pub use validators::{ValidatorEntry, ValidatorSet};
