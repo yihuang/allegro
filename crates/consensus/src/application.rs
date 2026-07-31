@@ -342,25 +342,17 @@ impl Actor {
         }
 
         // Look up parent block info from our tracking
-        let (parent_number, parent_hash, parent_timestamp, parent_timestamp_millis) =
-            match self.block_info.read() {
-                Ok(guard) => guard
-                    .get(&parent_digest)
-                    .map(|info| {
-                        (
-                            info.number,
-                            info.hash,
-                            info.timestamp,
-                            info.timestamp_millis,
-                        )
-                    })
-                    .unwrap_or((0, B256::ZERO, 0, 0)),
-                Err(e) => {
-                    error!(error = %e, "block_info read lock poisoned");
-                    // Drop the responder (see the payload-failure path below).
-                    return;
-                }
-            };
+        let (parent_number, parent_hash, parent_timestamp_millis) = match self.block_info.read() {
+            Ok(guard) => guard
+                .get(&parent_digest)
+                .map(|info| (info.number, info.hash, info.timestamp_millis))
+                .unwrap_or((0, B256::ZERO, 0)),
+            Err(e) => {
+                error!(error = %e, "block_info read lock poisoned");
+                // Drop the responder (see the payload-failure path below).
+                return;
+            }
+        };
 
         let proposer_bytes = {
             let mut bytes = [0u8; 32];
@@ -368,18 +360,15 @@ impl Actor {
             bytes
         };
 
-        // One clock reading for both fields so they stay consistent
-        // (timestamp_millis / 1000 == timestamp, which verify enforces).
+        // Milliseconds strictly increase past the parent; seconds are derived
+        // from them, so `timestamp_millis / 1000 == timestamp` holds by
+        // construction (verify enforces it) and seconds stay non-decreasing.
         let now_millis = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let now = now_millis / 1000;
-        // Timestamp (seconds) is non-decreasing: equal neighbours are allowed
-        // at sub-second block rates (validation is relaxed to `>=`).
-        let timestamp = std::cmp::max(now, parent_timestamp);
-        // Millisecond timestamp is non-decreasing relative to the parent.
-        let timestamp_millis = std::cmp::max(now_millis, parent_timestamp_millis);
+        let timestamp_millis = now_millis.max(parent_timestamp_millis + 1);
+        let timestamp = timestamp_millis / 1000;
 
         // Delegate block building to the payload builder
         let request = BuildPayloadRequest {
