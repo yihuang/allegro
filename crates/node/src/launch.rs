@@ -125,7 +125,7 @@ macro_rules! into_launched {
             payload_builder_handle,
             genesis_hash,
             genesis_timestamp,
-            genesis_timestamp_millis: genesis_timestamp * 1000,
+            genesis_timestamp_millis: genesis_timestamp.saturating_mul(1000),
             // Keep the node alive (dropping it would shut down JSON-RPC servers).
             _keep_alive: Arc::new(node),
             exit: Box::pin($exit),

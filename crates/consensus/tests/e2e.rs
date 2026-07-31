@@ -52,8 +52,11 @@ fn make_validator(seed: u8, port: u16) -> ValidatorEntry {
     }
 }
 
-fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
+fn spawn_actor(
+    validators: ValidatorSet,
+) -> (Mailbox, oneshot::Sender<()>, app_actor::ReceivedBlocks) {
     let (pending, received, block_info) = app_actor::new_block_stores();
+    let received_handle = received.clone();
     let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(EmptyBlockBuilder);
     let (actor, mailbox) = Actor::new(
         validators,
@@ -76,7 +79,7 @@ fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
             _ = actor.run() => {}
         }
     });
-    (mailbox, shutdown_tx)
+    (mailbox, shutdown_tx, received_handle)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -87,7 +90,7 @@ fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
 async fn test_consensus_block_production() {
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3000 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
-    let (mut mailbox, _shutdown) = spawn_actor(validators.clone());
+    let (mut mailbox, _shutdown, _received) = spawn_actor(validators.clone());
 
     let genesis = mailbox.genesis(Epoch::new(0)).await;
     assert_eq!(genesis, Digest(B256::ZERO));
@@ -128,6 +131,77 @@ async fn test_consensus_block_production() {
 
     let rx = mailbox.verify(ctx2.clone(), b2).await;
     assert!(rx.await.unwrap());
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Test: timestamp_millis must agree with the seconds timestamp
+// ═══════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_verify_rejects_inconsistent_timestamp_millis() {
+    use allegro_consensus::BuildPayloadRequest;
+    use std::time::SystemTime;
+
+    let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3200 + i as u16)).collect();
+    let validators = ValidatorSet::from_entries(&entries);
+    let (mut mailbox, _shutdown, received) = spawn_actor(validators.clone());
+
+    let genesis = mailbox.genesis(Epoch::new(0)).await;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let proposer = {
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(entries[1].public_key.as_ref());
+        bytes
+    };
+
+    let verify_crafted =
+        |mailbox: &mut Mailbox, timestamp: u64, timestamp_millis: u64, view: u64| {
+            let payload = common::build_empty_block(&BuildPayloadRequest {
+                parent_hash: genesis.0,
+                parent_number: 0,
+                parent_view: 1,
+                parent_digest: genesis,
+                epoch: 0,
+                view,
+                proposer,
+                timestamp,
+                timestamp_millis,
+            })
+            .expect("build crafted block");
+            let digest = Digest(payload.block_hash);
+            received
+                .write()
+                .unwrap()
+                .insert(digest, payload.block_bytes);
+            let ctx = Context {
+                round: Round::new(Epoch::new(0), View::new(view)),
+                leader: entries[1].public_key.clone(),
+                parent: (View::new(0), genesis),
+            };
+            let mut mb = mailbox.clone();
+            async move { mb.verify(ctx, digest).await.await.unwrap() }
+        };
+
+    // Millis pinned an hour past the seconds field → rejected
+    assert!(
+        !verify_crafted(&mut mailbox, now, (now + 3600) * 1000, 1).await,
+        "timestamp_millis disagreeing with timestamp must be rejected"
+    );
+
+    // Millis regressed below the seconds field → rejected
+    assert!(
+        !verify_crafted(&mut mailbox, now, (now - 5) * 1000, 2).await,
+        "lagging timestamp_millis must be rejected"
+    );
+
+    // Consistent, including sub-second precision → accepted
+    assert!(
+        verify_crafted(&mut mailbox, now, now * 1000 + 999, 3).await,
+        "consistent timestamp_millis must be accepted"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════

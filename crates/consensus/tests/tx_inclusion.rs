@@ -117,7 +117,7 @@ fn build_block(
     };
     let header = AllegroHeader {
         inner,
-        timestamp_millis: 0,
+        timestamp_millis: timestamp * 1000,
         consensus_context: Some(AllegroConsensusContext {
             epoch,
             view,
@@ -138,6 +138,7 @@ fn build_block(
         block_bytes: alloy_rlp::encode(&block),
         block_hash,
         block_number: parent_number + 1,
+        timestamp_millis: block.header.timestamp_millis,
     })
 }
 

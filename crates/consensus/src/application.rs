@@ -342,25 +342,17 @@ impl Actor {
         }
 
         // Look up parent block info from our tracking
-        let (parent_number, parent_hash, parent_timestamp, parent_timestamp_millis) =
-            match self.block_info.read() {
-                Ok(guard) => guard
-                    .get(&parent_digest)
-                    .map(|info| {
-                        (
-                            info.number,
-                            info.hash,
-                            info.timestamp,
-                            info.timestamp_millis,
-                        )
-                    })
-                    .unwrap_or((0, B256::ZERO, 0, 0)),
-                Err(e) => {
-                    error!(error = %e, "block_info read lock poisoned");
-                    // Drop the responder (see the payload-failure path below).
-                    return;
-                }
-            };
+        let (parent_number, parent_hash, parent_timestamp_millis) = match self.block_info.read() {
+            Ok(guard) => guard
+                .get(&parent_digest)
+                .map(|info| (info.number, info.hash, info.timestamp_millis))
+                .unwrap_or((0, B256::ZERO, 0)),
+            Err(e) => {
+                error!(error = %e, "block_info read lock poisoned");
+                // Drop the responder (see the payload-failure path below).
+                return;
+            }
+        };
 
         let proposer_bytes = {
             let mut bytes = [0u8; 32];
@@ -368,20 +360,15 @@ impl Actor {
             bytes
         };
 
-        // Timestamp (seconds) must be strictly greater than parent's
-        // (reth Engine API requirement).
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let timestamp = std::cmp::max(now, parent_timestamp);
-
-        // Millisecond timestamp must be monotonically increasing.
+        // Milliseconds strictly increase past the parent; seconds are derived
+        // from them, so `timestamp_millis / 1000 == timestamp` holds by
+        // construction (verify enforces it) and seconds stay non-decreasing.
         let now_millis = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let timestamp_millis = std::cmp::max(now_millis, parent_timestamp_millis);
+        let timestamp_millis = now_millis.max(parent_timestamp_millis.saturating_add(1));
+        let timestamp = timestamp_millis / 1000;
 
         // Delegate block building to the payload builder
         let request = BuildPayloadRequest {
@@ -394,15 +381,15 @@ impl Actor {
             proposer: proposer_bytes,
             timestamp,
             timestamp_millis,
-            parent_timestamp_millis,
         };
         let built = self.payload_builder.build_payload(&request).await;
 
-        let (block_bytes, block_hash, block_number) = match built {
+        let (block_bytes, block_hash, block_number, built_timestamp_millis) = match built {
             Ok(payload) => (
                 payload.block_bytes,
                 payload.block_hash,
                 payload.block_number,
+                payload.timestamp_millis,
             ),
             Err(e) => {
                 error!(error = %e, "payload builder failed");
@@ -421,7 +408,8 @@ impl Actor {
 
         let digest = AllegroDigest(block_hash);
 
-        // Track block info (including timestamp for parent lookups)
+        // Track block info (including timestamp for parent lookups). Use the
+        // builder-reported millis so this record matches what verifiers derive.
         match self.block_info.write() {
             Ok(mut guard) => {
                 guard.insert(
@@ -432,7 +420,7 @@ impl Actor {
                         view: msg.round.view().get(),
                         proposer: msg.leader.clone(),
                         timestamp,
-                        timestamp_millis,
+                        timestamp_millis: built_timestamp_millis,
                     },
                 );
             }
@@ -511,6 +499,26 @@ impl Actor {
             .await
         {
             Ok(ValidationResult::Valid(meta)) => {
+                // The seconds field is the execution layer's to validate;
+                // the invariant only consensus can check is that the
+                // millisecond field agrees with it. Without this, a proposer
+                // could pin timestamp_millis arbitrarily far ahead and
+                // max(now_millis, parent) would ratchet it into every
+                // descendant block.
+                if meta.timestamp_millis / 1000 != meta.timestamp {
+                    warn!(
+                        payload = %msg.payload,
+                        timestamp = meta.timestamp,
+                        timestamp_millis = meta.timestamp_millis,
+                        "verify failed: timestamp_millis don't match timestamp"
+                    );
+                    if let Some(ref m) = self.metrics {
+                        m.inc_failed_validations();
+                    }
+                    let _ = msg.response.send(false);
+                    return;
+                }
+
                 debug!(payload = %msg.payload, "verify succeeded");
                 // Record block info for future parent lookups (critical for reth mode)
                 match self.block_info.write() {

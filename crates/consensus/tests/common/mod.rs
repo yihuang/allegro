@@ -40,7 +40,7 @@ impl PayloadBuilder for EmptyBlockBuilder {
 }
 
 /// Build a transaction-less block for `request`.
-fn build_empty_block(request: &BuildPayloadRequest) -> Result<BuiltPayload, String> {
+pub fn build_empty_block(request: &BuildPayloadRequest) -> Result<BuiltPayload, String> {
     let number = request.parent_number + 1;
     let inner = alloy_consensus::Header {
         parent_hash: request.parent_hash,
@@ -94,6 +94,7 @@ fn build_empty_block(request: &BuildPayloadRequest) -> Result<BuiltPayload, Stri
         block_bytes: alloy_rlp::encode(&block),
         block_hash,
         block_number: number,
+        timestamp_millis: request.timestamp_millis,
     })
 }
 
@@ -108,6 +109,20 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
         return Ok(ValidationResult::Invalid(
             "missing consensus context".into(),
         ));
+    }
+
+    // reth's engine API rejects far-future timestamps natively; mirror it so
+    // tests exercise the same behaviour.
+    const ALLOWED_TIMESTAMP_DRIFT_SECS: u64 = 15;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if header.inner.timestamp > now + ALLOWED_TIMESTAMP_DRIFT_SECS {
+        return Ok(ValidationResult::Invalid(format!(
+            "timestamp {} is too far in the future (now: {}, max drift: {}s)",
+            header.inner.timestamp, now, ALLOWED_TIMESTAMP_DRIFT_SECS
+        )));
     }
 
     Ok(ValidationResult::Valid(BlockMeta {

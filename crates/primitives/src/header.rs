@@ -151,8 +151,8 @@ pub struct AllegroHeader {
     /// Inner Ethereum [`Header`].
     pub inner: Header,
 
-    /// Millisecond-precision timestamp, monotonically increasing per block.
-    /// Always ≥ parent's `timestamp_millis`. Uses milliseconds since UNIX epoch.
+    /// Millisecond-precision timestamp (since UNIX epoch), monotonically increasing:
+    /// always > the parent's `timestamp_millis`.
     pub timestamp_millis: u64,
 
     /// Consensus metadata. `None` for pre-consensus / genesis blocks.
