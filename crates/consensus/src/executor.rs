@@ -92,7 +92,7 @@ pub struct BuildPayloadRequest {
     /// Block timestamp (seconds since UNIX epoch) — Ethereum standard field.
     pub timestamp: u64,
     /// Millisecond-precision timestamp — the proposer guarantees it is
-    /// ≥ the parent's `timestamp_millis`.
+    /// > the parent's `timestamp_millis`.
     pub timestamp_millis: u64,
 }
 
