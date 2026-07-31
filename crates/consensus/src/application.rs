@@ -367,7 +367,7 @@ impl Actor {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let timestamp_millis = now_millis.max(parent_timestamp_millis + 1);
+        let timestamp_millis = now_millis.max(parent_timestamp_millis.saturating_add(1));
         let timestamp = timestamp_millis / 1000;
 
         // Delegate block building to the payload builder

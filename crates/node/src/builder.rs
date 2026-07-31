@@ -179,7 +179,7 @@ pub fn create_engine_payload_builder(
                             hash,
                             number,
                             timestamp,
-                            timestamp_millis: timestamp * 1000,
+                            timestamp_millis: timestamp.saturating_mul(1000),
                         }))
                     }
                     alloy_rpc_types_engine::PayloadStatusEnum::Invalid { validation_error } => {
