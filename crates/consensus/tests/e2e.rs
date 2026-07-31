@@ -11,14 +11,17 @@ use std::{
 
 use allegro_consensus::application::{self as app_actor, Actor, Mailbox};
 use allegro_consensus::{
-    config::ConsensusConfig, start_simplex_engine, Block, EngineConfig, StubPayloadBuilder,
-    ValidatorEntry, ValidatorSet,
+    config::ConsensusConfig, start_simplex_engine, Block, EngineConfig, ValidatorEntry,
+    ValidatorSet,
 };
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, Digest};
+
+mod common;
 use alloy_consensus::Header;
 use alloy_primitives::B256;
 use alloy_rlp::Decodable;
+use common::EmptyBlockBuilder;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::{
     simplex::types::Context,
@@ -54,7 +57,7 @@ fn spawn_actor(
 ) -> (Mailbox, oneshot::Sender<()>, app_actor::ReceivedBlocks) {
     let (pending, received, block_info) = app_actor::new_block_stores();
     let received_handle = received.clone();
-    let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(StubPayloadBuilder::new());
+    let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(EmptyBlockBuilder);
     let (actor, mailbox) = Actor::new(
         validators,
         1024,
@@ -136,7 +139,7 @@ async fn test_consensus_block_production() {
 
 #[tokio::test]
 async fn test_verify_rejects_inconsistent_timestamp_millis() {
-    use allegro_consensus::executor::build_empty_block_internal;
+    use allegro_consensus::BuildPayloadRequest;
     use std::time::SystemTime;
 
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3200 + i as u16)).collect();
@@ -156,16 +159,17 @@ async fn test_verify_rejects_inconsistent_timestamp_millis() {
 
     let verify_crafted =
         |mailbox: &mut Mailbox, timestamp: u64, timestamp_millis: u64, view: u64| {
-            let payload = build_empty_block_internal(
-                genesis.0,
-                0,
-                1,
-                0,
+            let payload = common::build_empty_block(&BuildPayloadRequest {
+                parent_hash: genesis.0,
+                parent_number: 0,
+                parent_view: 1,
+                parent_digest: genesis,
+                epoch: 0,
                 view,
                 proposer,
                 timestamp,
                 timestamp_millis,
-            )
+            })
             .expect("build crafted block");
             let digest = Digest(payload.block_hash);
             received
@@ -286,7 +290,7 @@ fn test_simplex_engine_initializes() {
             consensus_config: ConsensusConfig::default(),
             proposals: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             partition: "allegro".into(),
-            payload_builder: None,
+            payload_builder: Arc::new(EmptyBlockBuilder),
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
@@ -359,7 +363,7 @@ fn test_simplex_engine_loopback() {
             },
             proposals: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             partition: "allegro".into(),
-            payload_builder: None,
+            payload_builder: Arc::new(EmptyBlockBuilder),
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
@@ -471,7 +475,7 @@ fn test_two_validators_simulated() {
                 },
                 proposals: all_proposals.clone(),
                 partition: format!("allegro_{i}"),
-                payload_builder: None,
+                payload_builder: Arc::new(EmptyBlockBuilder),
                 metrics: None,
                 genesis_hash: B256::ZERO,
                 genesis_timestamp: 0,
@@ -534,7 +538,7 @@ fn test_empty_validator_set_rejected() {
             consensus_config: ConsensusConfig::default(),
             proposals: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             partition: "allegro".into(),
-            payload_builder: None,
+            payload_builder: Arc::new(EmptyBlockBuilder),
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,

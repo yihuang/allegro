@@ -176,8 +176,8 @@ optional `mpsc::Sender<AllegroDigest>`.  On `Activity::Finalization(cert)` it
 ### 3.5 Deterministic Tests
 
 Consensus integration tests use `commonware_runtime::deterministic::Runner` with
-`SimNetwork` for instant, reproducible multi-node simulations.  The stub
-payload builder is always used in this context because a real reth node cannot
+`SimNetwork` for instant, reproducible multi-node simulations.  They supply the
+empty-block payload builder from `tests/common` because a real reth node cannot
 run inside the deterministic runtime.
 
 ---
@@ -634,7 +634,6 @@ pub fn start_simplex_engine<TContext, …>(
 ```
 allegro node [reth flags] [--consensus.* flags]   # reth's CLI + consensus extension
 allegro node --dev [reth flags]                   # solo-validator devnet (dev chain, no genesis file)
-allegro stub [--consensus.* flags]                # standalone stub mode (no reth)
 
 # consensus flags: --consensus.node-index, --consensus.listen-address,
 # --consensus.peer (must appear on every node for each peer),

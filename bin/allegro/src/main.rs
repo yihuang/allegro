@@ -11,9 +11,6 @@
 //!      `EthereumNode` and hands engine/payload handles to the consensus thread.
 //!   2. **Consensus thread**: commonware tokio runtime runs the simplex engine
 //!      with a `PayloadBuilder` backed by reth's engine API.
-//!
-//! `allegro stub [--consensus.*]` instead runs a standalone consensus node with
-//! the empty-block stub builder (no reth, for dev/testing).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -38,7 +35,6 @@ use reth_ethereum_cli::interface::Cli;
 use reth_ethereum_engine_primitives::EthEngineTypes;
 use reth_payload_builder::PayloadBuilderHandle;
 use tracing::{error, info, warn};
-use tracing_subscriber::filter::EnvFilter;
 
 // ── Consensus CLI extension (`--consensus.*`) ───────────────
 
@@ -195,13 +191,6 @@ impl ChainSpecParser for AllegroChainSpecParser {
 // ── Entry point ────────────────────────────────────────────
 
 fn main() -> eyre::Result<()> {
-    // `allegro stub` predates the reth CLI shape and keeps its own tiny parser.
-    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    if argv.get(1).map(|a| a == "stub").unwrap_or(false) {
-        argv.remove(1);
-        return run_stub(StubCli::parse_from(argv));
-    }
-
     let mut cli = Cli::<AllegroChainSpecParser, ConsensusArgs>::parse();
 
     // `--dev` (tempo/reth compatible) means a solo-validator devnet here:
@@ -231,6 +220,7 @@ fn main() -> eyre::Result<()> {
                 payload_handle: launched.payload_builder_handle.clone(),
                 genesis_hash: launched.genesis_hash,
                 genesis_timestamp: launched.genesis_timestamp,
+                genesis_timestamp_millis: launched.genesis_timestamp_millis,
             },
         )?;
 
@@ -355,7 +345,7 @@ async fn track_peers(
 }
 
 // ════════════════════════════════════════════════════════════
-//  CONSENSUS RUNTIME (shared by reth and stub modes)
+//  CONSENSUS RUNTIME
 // ════════════════════════════════════════════════════════════
 
 /// Handles wiring consensus to an embedded reth node.
@@ -364,6 +354,7 @@ struct RethWiring {
     payload_handle: PayloadBuilderHandle<EthEngineTypes>,
     genesis_hash: B256,
     genesis_timestamp: u64,
+    genesis_timestamp_millis: u64,
 }
 
 /// Spawn [`run_consensus`] on its own OS thread, wired to reth.
@@ -374,16 +365,15 @@ fn spawn_consensus_thread(
 ) -> eyre::Result<()> {
     std::thread::Builder::new()
         .name("allegro-consensus".into())
-        .spawn(move || run_consensus(args, validators, Some(reth)))
+        .spawn(move || run_consensus(args, validators, reth))
         .map(|_| ())
         .map_err(|e| eyre::eyre!("failed to spawn consensus thread: {e}"))
 }
 
 /// Run the simplex engine on a commonware runtime (blocking): consensus p2p,
-/// the engine actor, and — when wired to reth — payload building over the
-/// engine API plus block finalization. Without wiring, the engine falls back
-/// to the stub (empty-block) payload builder.
-fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: Option<RethWiring>) {
+/// the engine actor, payload building over reth's engine API, and block
+/// finalization.
+fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring) {
     let sk = PrivateKey::from_seed(args.node as u64);
     let pk = sk.public_key();
     info!(node = args.node, listen = %args.listen(), peers = ?args.peers, "starting allegro consensus");
@@ -411,33 +401,16 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: Option<Ret
         track_peers(&mut oracle, &pk, &validators).await;
         network.start();
 
-        let metrics = if args.metrics {
-            Some(ConsensusMetrics::new())
-        } else {
-            None
-        };
+        let metrics = args.metrics.then(ConsensusMetrics::new);
 
         // ── Reth wiring: engine-API payload builder + finalization ──
-        let mut payload_builder = None;
-        let mut finalized_tx = None;
-        let mut finalizer = None;
-        let (genesis_hash, genesis_timestamp) = match reth {
-            Some(r) => {
-                let tracker = allegro_node::builder::ForkchoiceTracker::new(r.genesis_hash);
-                let builder = allegro_node::builder::create_engine_payload_builder(
-                    r.engine_handle.clone(),
-                    r.payload_handle,
-                    tracker.clone(),
-                );
-                let (tx, rx) = futures::channel::mpsc::channel(32);
-                payload_builder =
-                    Some(Arc::new(builder) as Arc<dyn allegro_consensus::PayloadBuilder>);
-                finalized_tx = Some(tx);
-                finalizer = Some((rx, r.engine_handle, tracker));
-                (r.genesis_hash, r.genesis_timestamp)
-            }
-            None => (B256::ZERO, 0),
-        };
+        let tracker = allegro_node::builder::ForkchoiceTracker::new(reth.genesis_hash);
+        let payload_builder = Arc::new(allegro_node::builder::create_engine_payload_builder(
+            reth.engine_handle.clone(),
+            reth.payload_handle,
+            tracker.clone(),
+        ));
+        let (finalized_tx, finalized_rx) = futures::channel::mpsc::channel(32);
 
         // ── Start simplex engine ──
         match start_simplex_engine(
@@ -450,10 +423,10 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: Option<Ret
                 partition: format!("allegro_{}", args.node),
                 payload_builder,
                 metrics,
-                genesis_hash,
-                genesis_timestamp,
-                genesis_timestamp_millis: genesis_timestamp * 1000,
-                finalized_tx,
+                genesis_hash: reth.genesis_hash,
+                genesis_timestamp: reth.genesis_timestamp,
+                genesis_timestamp_millis: reth.genesis_timestamp_millis,
+                finalized_tx: Some(finalized_tx),
             },
             (votes, certs, resolver),
             blocks.0,
@@ -461,15 +434,13 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: Option<Ret
             oracle,
         ) {
             Ok(started) => {
-                if let Some((finalized_rx, engine_handle, tracker)) = finalizer {
-                    allegro_node::finalizer::spawn_finalizer(
-                        context.with_label("finalizer"),
-                        finalized_rx,
-                        started.block_info,
-                        engine_handle,
-                        tracker,
-                    );
-                }
+                allegro_node::finalizer::spawn_finalizer(
+                    context.with_label("finalizer"),
+                    finalized_rx,
+                    started.block_info,
+                    reth.engine_handle,
+                    tracker,
+                );
                 info!("allegro consensus is running");
                 loop {
                     context.sleep(Duration::from_secs(3600)).await;
@@ -478,48 +449,4 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: Option<Ret
             Err(e) => error!(%e, "failed to start engine"),
         }
     });
-}
-
-// ════════════════════════════════════════════════════════════
-//  STUB MODE (`allegro stub`, no reth)
-// ════════════════════════════════════════════════════════════
-
-/// Standalone consensus node using the empty-block stub builder.
-#[derive(Debug, Parser)]
-#[command(
-    name = "allegro stub",
-    about = "Allegro consensus node with stub (empty-block) execution"
-)]
-struct StubCli {
-    #[command(flatten)]
-    consensus: ConsensusArgs,
-
-    /// Path to a genesis file with embedded validators.
-    #[arg(long = "chain", env = "ALLEGRO_GENESIS")]
-    chain: Option<PathBuf>,
-
-    /// Log level for the consensus layer.
-    #[arg(long = "log-level", default_value = "info", env = "ALLEGRO_LOG_LEVEL")]
-    log_level: String,
-}
-
-fn run_stub(cli: StubCli) -> eyre::Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(format!("allegro={},commonware=warn", cli.log_level)))
-        .unwrap_or_else(|_| EnvFilter::new("allegro=info,commonware=warn"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
-
-    let mut args = cli.consensus;
-    args.resolve_listen(false);
-    let genesis_validators = match &cli.chain {
-        Some(path) => allegro_node::chainspec::load_chain_with_validators(path)?.1,
-        None => ValidatorSet::new(),
-    };
-    let validators = build_validator_set(&args, genesis_validators);
-
-    run_consensus(args, validators, None);
-    Ok(())
 }

@@ -238,7 +238,7 @@ pub struct Actor {
     received_blocks: ReceivedBlocks,
     /// Block info indexed by digest.
     block_info: BlockInfoMap,
-    /// Payload builder (delegates to stub or reth engine API).
+    /// Payload builder (delegates to the execution layer).
     payload_builder: Arc<dyn PayloadBuilder>,
     /// Consensus metrics.
     metrics: Option<ConsensusMetrics>,

@@ -1,8 +1,7 @@
 //! Payload builder abstraction for block construction and validation.
 //!
-//! Follows Tempo's architecture where block building is delegated to the execution layer.
-//! [`PayloadBuilder`] is the trait implemented by both the stub (devnet) and the real
-//! reth engine API integration.
+//! Follows Tempo's architecture where block building is delegated to the
+//! execution layer: [`PayloadBuilder`] is implemented over reth's engine API.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -55,8 +54,8 @@ pub enum ValidationResult {
 
 /// Abstract interface for building and validating blocks.
 ///
-/// In production, this connects to reth's engine API (via [`ConsensusEngineHandle`]).
-/// For devnet, [`StubPayloadBuilder`] builds empty blocks.
+/// Backed by reth's engine API in production; the consensus integration tests
+/// supply their own empty-block implementation.
 pub trait PayloadBuilder: Send + Sync {
     /// Build a block payload.
     ///
@@ -76,51 +75,6 @@ pub trait PayloadBuilder: Send + Sync {
         block_bytes: Vec<u8>,
         parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>;
-}
-
-// ── StubPayloadBuilder ──────────────────────────────────────
-
-/// Builds empty blocks for devnet/testing.
-///
-/// This is the default implementation used when reth is not integrated.
-/// It constructs valid [`AllegroHeader`]s with no transactions.
-#[derive(Clone, Default)]
-pub struct StubPayloadBuilder;
-
-impl StubPayloadBuilder {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl PayloadBuilder for StubPayloadBuilder {
-    fn build_payload(
-        &self,
-        request: &BuildPayloadRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> {
-        // Build an empty block deterministically
-        let result = build_empty_block_internal(
-            request.parent_hash,
-            request.parent_number,
-            request.parent_view,
-            request.epoch,
-            request.view,
-            request.proposer,
-            request.timestamp,
-            request.timestamp_millis,
-        );
-        Box::pin(async move { result })
-    }
-
-    fn validate_block(
-        &self,
-        block_bytes: Vec<u8>,
-        _parent_hash: B256,
-    ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
-        // Stub validation: just check the block can be decoded
-        let result = validate_empty_block(&block_bytes);
-        Box::pin(async move { result })
-    }
 }
 
 // ── EngineApiPayloadBuilder ────────────────────────────────
@@ -239,132 +193,6 @@ impl PayloadBuilder for EngineApiPayloadBuilder {
         };
         (self.validate_fn)(req)
     }
-}
-
-// ── Empty block construction (shared between stub and real builder) ──
-
-use alloy_consensus::{Block as AlloyBlock, BlockBody, Sealable, TxEnvelope};
-use alloy_primitives::{keccak256, Address, Bloom, B64, U256};
-
-use allegro_primitives::{AllegroConsensusContext, AllegroHeader, ProposerKey};
-
-/// Hash of an empty transaction list: keccak256(0xc0)
-fn empty_txs_root() -> B256 {
-    keccak256([0xc0])
-}
-
-const EMPTY_OMMERS_HASH: B256 = B256::ZERO;
-
-/// Build an empty Allegro block (no transactions).
-#[allow(clippy::too_many_arguments)]
-pub fn build_empty_block_internal(
-    parent_hash: B256,
-    parent_number: u64,
-    parent_view: u64,
-    epoch: u64,
-    view: u64,
-    proposer: [u8; 32],
-    timestamp: u64,
-    timestamp_millis: u64,
-) -> Result<BuiltPayload, String> {
-    let inner = alloy_consensus::Header {
-        parent_hash,
-        ommers_hash: EMPTY_OMMERS_HASH,
-        beneficiary: Address::ZERO,
-        state_root: B256::ZERO,
-        transactions_root: empty_txs_root(),
-        receipts_root: B256::ZERO,
-        logs_bloom: Bloom::ZERO,
-        difficulty: U256::ZERO,
-        number: parent_number + 1,
-        gas_limit: 30_000_000,
-        gas_used: 0,
-        timestamp,
-        extra_data: Default::default(),
-        mix_hash: B256::ZERO,
-        nonce: B64::ZERO,
-        base_fee_per_gas: Some(0),
-        withdrawals_root: None,
-        blob_gas_used: None,
-        excess_blob_gas: None,
-        parent_beacon_block_root: None,
-        requests_hash: None,
-        block_access_list_hash: None,
-        slot_number: None,
-    };
-
-    let consensus_context = AllegroConsensusContext {
-        epoch,
-        view,
-        parent_view,
-        proposer: ProposerKey(proposer),
-    };
-
-    let header = AllegroHeader {
-        inner,
-        timestamp_millis,
-        consensus_context: Some(consensus_context),
-    };
-
-    let block_hash = header.hash_slow();
-
-    let block = AlloyBlock {
-        header,
-        body: BlockBody {
-            transactions: Vec::<TxEnvelope>::new(),
-            ommers: Vec::new(),
-            withdrawals: None,
-        },
-    };
-
-    let block_bytes = alloy_rlp::encode(&block);
-
-    Ok(BuiltPayload {
-        timestamp_millis,
-        block_bytes,
-        block_hash,
-        block_number: parent_number + 1,
-    })
-}
-
-/// Validate a stub block: verify it decodes and has consistent structure.
-fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> {
-    let block: AlloyBlock<TxEnvelope, AllegroHeader> =
-        alloy_rlp::Decodable::decode(&mut &block_bytes[..])
-            .map_err(|e| format!("rlp decode: {e}"))?;
-
-    let header = &block.header;
-
-    // Verify consensus context exists
-    if header.consensus_context.is_none() {
-        return Ok(ValidationResult::Invalid(
-            "missing consensus context".into(),
-        ));
-    }
-
-    // Reject blocks with timestamps too far in the future
-    // (reth's engine API does this natively; the stub mirrors it for test consistency)
-    const ALLOWED_TIMESTAMP_DRIFT_SECS: u64 = 15;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    if header.inner.timestamp > now + ALLOWED_TIMESTAMP_DRIFT_SECS {
-        return Ok(ValidationResult::Invalid(format!(
-            "timestamp {} is too far in the future (now: {}, max drift: {}s)",
-            header.inner.timestamp, now, ALLOWED_TIMESTAMP_DRIFT_SECS
-        )));
-    }
-
-    // Compute hash and return metadata.
-    let hash = header.hash_slow();
-
-    Ok(ValidationResult::Valid(BlockMeta {
-        hash,
-        number: header.inner.number,
-        timestamp: header.inner.timestamp,
-        timestamp_millis: header.timestamp_millis,
-    }))
 }
 
 // ── Engine API helpers ─────────────────────────────────────
