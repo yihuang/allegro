@@ -11,14 +11,17 @@ use std::{
 
 use allegro_consensus::application::{self as app_actor, Actor, Mailbox};
 use allegro_consensus::{
-    config::ConsensusConfig, start_simplex_engine, Block, EngineConfig, StubPayloadBuilder,
-    ValidatorEntry, ValidatorSet,
+    config::ConsensusConfig, start_simplex_engine, Block, EngineConfig, ValidatorEntry,
+    ValidatorSet,
 };
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, Digest};
+
+mod common;
 use alloy_consensus::Header;
 use alloy_primitives::B256;
 use alloy_rlp::Decodable;
+use common::EmptyBlockBuilder;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::{
     simplex::types::Context,
@@ -51,7 +54,7 @@ fn make_validator(seed: u8, port: u16) -> ValidatorEntry {
 
 fn spawn_actor(validators: ValidatorSet) -> (Mailbox, oneshot::Sender<()>) {
     let (pending, received, block_info) = app_actor::new_block_stores();
-    let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(StubPayloadBuilder::new());
+    let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(EmptyBlockBuilder);
     let (actor, mailbox) = Actor::new(
         validators,
         1024,
@@ -213,7 +216,7 @@ fn test_simplex_engine_initializes() {
             consensus_config: ConsensusConfig::default(),
             proposals: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             partition: "allegro".into(),
-            payload_builder: None,
+            payload_builder: Arc::new(EmptyBlockBuilder),
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
@@ -286,7 +289,7 @@ fn test_simplex_engine_loopback() {
             },
             proposals: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             partition: "allegro".into(),
-            payload_builder: None,
+            payload_builder: Arc::new(EmptyBlockBuilder),
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
@@ -398,7 +401,7 @@ fn test_two_validators_simulated() {
                 },
                 proposals: all_proposals.clone(),
                 partition: format!("allegro_{i}"),
-                payload_builder: None,
+                payload_builder: Arc::new(EmptyBlockBuilder),
                 metrics: None,
                 genesis_hash: B256::ZERO,
                 genesis_timestamp: 0,
@@ -461,7 +464,7 @@ fn test_empty_validator_set_rejected() {
             consensus_config: ConsensusConfig::default(),
             proposals: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             partition: "allegro".into(),
-            payload_builder: None,
+            payload_builder: Arc::new(EmptyBlockBuilder),
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,

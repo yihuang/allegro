@@ -358,9 +358,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
                         consensus_config: cfg.clone(),
                         proposals: proposals[i].clone(),
                         partition: format!("a{i}"),
-                        payload_builder: Some(
-                            recording as Arc<dyn allegro_consensus::PayloadBuilder>,
-                        ),
+                        payload_builder: recording as Arc<dyn allegro_consensus::PayloadBuilder>,
                         metrics: None,
                         genesis_hash: B256::ZERO,
                         genesis_timestamp: 0,

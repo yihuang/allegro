@@ -52,7 +52,6 @@ from the validator index; no key files are needed).
 ```
 allegro node [reth flags] [--consensus.* flags]   # reth's CLI + consensus extension
 allegro node --dev [reth flags]                   # solo-validator devnet (dev chain, no genesis file)
-allegro stub [--consensus.* flags]                # standalone stub mode (no reth)
 
 # reth flags (full reth node CLI; the usual devnet subset):
 #   --chain <PATH|dev>  --datadir <PATH>  --http --http.port <P>

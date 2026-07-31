@@ -1,14 +1,11 @@
-//! Multi-node consensus e2e tests.
+//! Multi-node consensus tests: several validators run through consensus
+//! rounds over commonware's simulated p2p network.
 //!
-//! Uses commonware's simulated p2p network to run multiple validators
-//! through consensus rounds on the deterministic runtime and verify
-//! block production.
-//!
-//! # Deterministic Runtime
-//!
-//! All tests use `deterministic::Runner` which advances time only when
-//! `context.sleep()` is called. Tests advance time in small increments
-//! to allow the engine to process messages between views.
+//! All tests use `deterministic::Runner`, which advances time only when
+//! `context.sleep()` is called, so they step time in small increments to let
+//! the engine process messages between views.
+
+mod common;
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -140,7 +137,7 @@ async fn start_engines(
             consensus_config: cfg.clone(),
             proposals: proposal_logs[i].clone(),
             partition: format!("allegro_{i}"),
-            payload_builder: None,
+            payload_builder: Arc::new(common::EmptyBlockBuilder),
             metrics: None,
             genesis_hash: B256::ZERO,
             genesis_timestamp: 0,
@@ -388,7 +385,7 @@ fn test_metrics_track_proposals() {
                 consensus_config: cfg.clone(),
                 proposals: per_validator_proposals[i].clone(),
                 partition: format!("allegro_{i}"),
-                payload_builder: None,
+                payload_builder: Arc::new(common::EmptyBlockBuilder),
                 metrics: my_metrics,
                 genesis_hash: B256::ZERO,
                 genesis_timestamp: 0,
