@@ -8,26 +8,32 @@
 //!
 //! The actor communicates with the simplex engine via a [`Mailbox`] that
 //! implements [`Automaton`]. Messages are sent over an mpsc channel from the
-//! engine to the actor, which processes them sequentially:
+//! engine to the actor, which handles them concurrently:
 //!
 //! 1. `Genesis` — returns the genesis block digest
 //! 2. `Propose` — builds a new block via the payload builder
 //! 3. `Verify` — validates a block from another proposer
 //! 4. `Broadcast` — engine asks to broadcast a block (handled by the relay)
+//!
+//! Accepting a block also starts the next view's payload, when this node is
+//! the one that will propose it.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
 use alloy_primitives::B256;
 use commonware_consensus::{
+    simplex::elector::{Config as ElectorConfig, Elector, RoundRobin, RoundRobinElector},
+    simplex::scheme::ed25519,
     simplex::types::Context,
     simplex::Plan,
-    types::{Epoch, Round, View},
+    types::{Epoch, Participant, Round, View},
     Automaton, CertifiableAutomaton,
 };
-use commonware_cryptography::{ed25519::PublicKey, Signer as _};
-use commonware_utils::channel::oneshot;
+use commonware_cryptography::{ed25519::PublicKey, Sha256, Signer as _};
+use commonware_utils::{channel::oneshot, ordered::Set};
 use futures::{channel::mpsc, SinkExt, StreamExt};
 use tracing::{debug, error, info, warn};
 
@@ -219,7 +225,75 @@ impl Automaton for Mailbox {
 
 impl CertifiableAutomaton for Mailbox {}
 
+// ── Leader schedule ─────────────────────────────────────────
+
+/// Answers "do I lead this round?" for rounds that have not happened yet.
+///
+/// Takes the elector value the engine votes with, so swapping electors fails
+/// to compile here rather than silently predicting the wrong rotation.
+/// Round-robin ignores the previous view's certificate, which is what makes a
+/// future leader knowable at all; a VRF elector would not be predictable and
+/// this type would have to answer "unknown".
+#[derive(Clone)]
+pub struct LeaderSchedule {
+    elector: RoundRobinElector<ed25519::Scheme>,
+    me: PublicKey,
+    /// `None` if this node is not a validator, and so leads nothing.
+    me_index: Option<Participant>,
+}
+
+impl LeaderSchedule {
+    /// `elector` and `participants` must be the ones the engine was configured
+    /// with.
+    pub fn new(elector: RoundRobin<Sha256>, participants: &Set<PublicKey>, me: PublicKey) -> Self {
+        Self {
+            elector: ElectorConfig::<ed25519::Scheme>::build(elector, participants),
+            me_index: participants.position(&me).map(Participant::from_usize),
+            me,
+        }
+    }
+
+    /// This node's public key.
+    pub fn me(&self) -> &PublicKey {
+        &self.me
+    }
+
+    /// Whether this node leads `round`.
+    pub fn leads(&self, round: Round) -> bool {
+        self.me_index == Some(self.elector.elect(round, None))
+    }
+}
+
 // ── Actor ───────────────────────────────────────────────────
+
+/// Everything [`Actor::new`] needs to run.
+pub struct ActorConfig {
+    /// Validator set, used to reject proposals from unknown proposers.
+    pub validators: ValidatorSet,
+    /// Mailbox capacity (message backlog from the engine).
+    pub mailbox_size: usize,
+    /// Collection point for proposed digests (for testing).
+    pub proposals: Option<Arc<Mutex<Vec<AllegroDigest>>>>,
+    /// Blocks we proposed (relay reads from here to broadcast).
+    pub pending_blocks: PendingBlocks,
+    /// Blocks received from peers.
+    pub received_blocks: ReceivedBlocks,
+    /// Block info indexed by digest.
+    pub block_info: BlockInfoMap,
+    /// Payload builder (delegates to the execution layer).
+    pub payload_builder: Arc<dyn PayloadBuilder>,
+    /// Optional metrics collector.
+    pub metrics: Option<ConsensusMetrics>,
+    /// Genesis block hash (from the chainspec).
+    pub genesis_hash: B256,
+    /// Genesis block timestamp (seconds).
+    pub genesis_timestamp: u64,
+    /// Genesis block timestamp (milliseconds).
+    pub genesis_timestamp_millis: u64,
+    /// Leader prediction, used to start the next view's payload early.
+    /// Without one the actor never prepares and every proposal builds cold.
+    pub leader_schedule: Option<LeaderSchedule>,
+}
 
 /// The application actor processes consensus events and manages block production.
 ///
@@ -228,20 +302,21 @@ impl CertifiableAutomaton for Mailbox {}
 /// [`PayloadBuilder`] for actual block construction and validation.
 pub struct Actor {
     receiver: mpsc::Receiver<Message>,
+    inner: Inner,
+}
+
+/// The actor's state, borrowed by every in-flight message handler. Fields
+/// mirror [`ActorConfig`], which documents them.
+struct Inner {
     validators: ValidatorSet,
-    proposal_count: u64,
-    /// All proposed digests, for test verification.
-    pub proposals: Arc<Mutex<Vec<AllegroDigest>>>,
-    /// Blocks we proposed (relay reads from here to broadcast).
+    proposal_count: AtomicU64,
+    proposals: Arc<Mutex<Vec<AllegroDigest>>>,
     pending_blocks: PendingBlocks,
-    /// Blocks received from peers.
     received_blocks: ReceivedBlocks,
-    /// Block info indexed by digest.
     block_info: BlockInfoMap,
-    /// Payload builder (delegates to the execution layer).
     payload_builder: Arc<dyn PayloadBuilder>,
-    /// Consensus metrics.
     metrics: Option<ConsensusMetrics>,
+    leader_schedule: Option<LeaderSchedule>,
 }
 
 impl Actor {
@@ -249,21 +324,22 @@ impl Actor {
     ///
     /// Returns the actor and its mailbox. The caller must call [`run()`](Self::run)
     /// to process messages.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        validators: ValidatorSet,
-        mailbox_size: usize,
-        proposals: Option<Arc<Mutex<Vec<AllegroDigest>>>>,
-        pending_blocks: PendingBlocks,
-        received_blocks: ReceivedBlocks,
-        block_info: BlockInfoMap,
-        payload_builder: Arc<dyn PayloadBuilder>,
-        metrics: Option<ConsensusMetrics>,
-        genesis_hash: B256,
-        genesis_timestamp: u64,
-        genesis_timestamp_millis: u64,
-    ) -> (Self, Mailbox) {
+    pub fn new(config: ActorConfig) -> (Self, Mailbox) {
+        let ActorConfig {
+            validators,
+            mailbox_size,
+            proposals,
+            pending_blocks,
+            received_blocks,
+            block_info,
+            payload_builder,
+            metrics,
+            genesis_hash,
+            genesis_timestamp,
+            genesis_timestamp_millis,
+            leader_schedule,
+        } = config;
+
         // Register genesis block info
         let genesis_digest = commonware_cryptography::Digest::EMPTY;
         let genesis_sk = commonware_cryptography::ed25519::PrivateKey::from_seed(0);
@@ -290,41 +366,56 @@ impl Actor {
         let mailbox = Mailbox::new(sender);
         let actor = Self {
             receiver,
-            validators,
-            proposal_count: 0,
-            proposals: proposals.unwrap_or_else(|| Arc::new(Mutex::new(Vec::new()))),
-            pending_blocks,
-            received_blocks,
-            block_info,
-            payload_builder,
-            metrics,
+            inner: Inner {
+                validators,
+                proposal_count: AtomicU64::new(0),
+                proposals: proposals.unwrap_or_else(|| Arc::new(Mutex::new(Vec::new()))),
+                pending_blocks,
+                received_blocks,
+                block_info,
+                payload_builder,
+                metrics,
+                leader_schedule,
+            },
         };
         (actor, mailbox)
     }
 
     /// Run the actor's event loop, processing messages from the engine.
-    pub async fn run(&mut self) {
+    ///
+    /// Handlers run concurrently: awaiting a payload build in the receive loop
+    /// would stall `Verify` behind it, so this node would stop voting while it
+    /// proposes. Ordering that matters is the engine's — a parent is notarized,
+    /// and so verified, before any view asks us to build on it.
+    pub async fn run(self) {
         info!("application actor started");
-        while let Some(msg) = self.receiver.next().await {
-            match msg {
-                Message::Genesis(g) => self.handle_genesis(g).await,
-                Message::Propose(p) => self.handle_propose(*p).await,
-                Message::Verify(v) => self.handle_verify(*v).await,
-                Message::Broadcast(b) => self.handle_broadcast(*b).await,
-            }
-        }
+        let Self { receiver, inner } = self;
+        receiver
+            .for_each_concurrent(None, |msg| inner.handle(msg))
+            .await;
         warn!("application actor stopped");
     }
+}
 
-    async fn handle_genesis(&mut self, msg: Genesis) {
+impl Inner {
+    async fn handle(&self, msg: Message) {
+        match msg {
+            Message::Genesis(g) => self.handle_genesis(g).await,
+            Message::Propose(p) => self.handle_propose(*p).await,
+            Message::Verify(v) => self.handle_verify(*v).await,
+            Message::Broadcast(b) => self.handle_broadcast(*b).await,
+        }
+    }
+
+    async fn handle_genesis(&self, msg: Genesis) {
         info!(epoch = %msg.epoch.get(), "genesis");
         let digest = commonware_cryptography::Digest::EMPTY;
         // Genesis block info was already registered in `new()`. Just respond.
         let _ = msg.response.send(digest);
     }
 
-    async fn handle_propose(&mut self, msg: Propose) {
-        self.proposal_count += 1;
+    async fn handle_propose(&self, msg: Propose) {
+        let count = self.proposal_count.fetch_add(1, Ordering::Relaxed) + 1;
         let parent_digest = msg.parent.1;
         let parent_view = msg.parent.0;
 
@@ -333,7 +424,7 @@ impl Actor {
             leader = %msg.leader,
             parent_view = %parent_view.get(),
             parent_digest = %parent_digest,
-            count = self.proposal_count,
+            count,
             "handle_propose"
         );
 
@@ -341,56 +432,38 @@ impl Actor {
             m.inc_blocks_proposed();
         }
 
-        // Look up parent block info from our tracking
-        let (parent_number, parent_hash, parent_timestamp_millis) = match self.block_info.read() {
+        // Look up parent block info from our tracking. A parent we have never
+        // seen cannot be built on: substituting genesis here would get a
+        // genesis-parented block notarized (see the payload-failure path
+        // below), so skip the view instead.
+        let parent = match self.block_info.read() {
             Ok(guard) => guard
                 .get(&parent_digest)
-                .map(|info| (info.number, info.hash, info.timestamp_millis))
-                .unwrap_or((0, B256::ZERO, 0)),
+                .map(|info| Parent::new(parent_digest, info)),
             Err(e) => {
                 error!(error = %e, "block_info read lock poisoned");
                 // Drop the responder (see the payload-failure path below).
                 return;
             }
         };
-
-        let proposer_bytes = {
-            let mut bytes = [0u8; 32];
-            bytes.copy_from_slice(msg.leader.as_ref());
-            bytes
+        let Some(parent) = parent else {
+            warn!(%parent_digest, "no block info for parent; skipping view");
+            if let Some(ref m) = self.metrics {
+                m.inc_errors();
+            }
+            return;
         };
 
-        // Milliseconds strictly increase past the parent; seconds are derived
-        // from them, so `timestamp_millis / 1000 == timestamp` holds by
-        // construction (verify enforces it) and seconds stay non-decreasing.
-        let now_millis = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let timestamp_millis = now_millis.max(parent_timestamp_millis.saturating_add(1));
-        let timestamp = timestamp_millis / 1000;
-
-        // Delegate block building to the payload builder
-        let request = BuildPayloadRequest {
-            parent_hash,
-            parent_number,
-            parent_view: parent_view.get(),
-            parent_digest,
-            epoch: msg.round.epoch().get(),
-            view: msg.round.view().get(),
-            proposer: proposer_bytes,
-            timestamp,
-            timestamp_millis,
-        };
+        // Delegate block building to the payload builder. If a payload was
+        // prepared for this parent the builder reuses it, and the timestamps
+        // in the request are the ones it already froze — which is why the
+        // block's own timestamps, not the request's, go into the block info
+        // record below.
+        let request = child_request(msg.round, parent_view.get(), parent, &msg.leader);
         let built = self.payload_builder.build_payload(&request).await;
 
-        let (block_bytes, block_hash, block_number, built_timestamp_millis) = match built {
-            Ok(payload) => (
-                payload.block_bytes,
-                payload.block_hash,
-                payload.block_number,
-                payload.timestamp_millis,
-            ),
+        let payload = match built {
+            Ok(payload) => payload,
             Err(e) => {
                 error!(error = %e, "payload builder failed");
                 if let Some(ref m) = self.metrics {
@@ -406,33 +479,31 @@ impl Actor {
             }
         };
 
-        let digest = AllegroDigest(block_hash);
-
-        // Track block info (including timestamp for parent lookups). Use the
-        // builder-reported millis so this record matches what verifiers derive.
-        match self.block_info.write() {
-            Ok(mut guard) => {
-                guard.insert(
-                    digest,
-                    BlockInfo {
-                        number: block_number,
-                        hash: block_hash,
-                        view: msg.round.view().get(),
-                        proposer: msg.leader.clone(),
-                        timestamp,
-                        timestamp_millis: built_timestamp_millis,
-                    },
-                );
-            }
-            Err(e) => {
-                error!(error = %e, "block_info write lock poisoned in propose");
-            }
-        }
+        let digest = AllegroDigest(payload.block_hash);
+        self.record_block_info(
+            digest,
+            BlockInfo {
+                number: payload.block_number,
+                hash: payload.block_hash,
+                view: msg.round.view().get(),
+                proposer: msg.leader.clone(),
+                // Builder-reported, so this record matches what verifiers
+                // derive from the block itself.
+                timestamp: payload.timestamp,
+                timestamp_millis: payload.timestamp_millis,
+            },
+        );
+        let proposed = Parent {
+            digest,
+            hash: payload.block_hash,
+            number: payload.block_number,
+            timestamp_millis: payload.timestamp_millis,
+        };
 
         // Store in pending_blocks so the relay can broadcast it
         match self.pending_blocks.lock() {
             Ok(mut guard) => {
-                guard.insert(digest, block_bytes);
+                guard.insert(digest, payload.block_bytes);
             }
             Err(e) => {
                 error!(error = %e, "pending_blocks lock poisoned");
@@ -444,11 +515,15 @@ impl Actor {
             Err(e) => error!(error = %e, "proposals lock poisoned"),
         }
 
-        info!(%digest, number = block_number, "proposed block");
+        info!(%digest, number = payload.block_number, "proposed block");
         let _ = msg.response.send(digest);
+
+        // Only reached when this node leads consecutive views, which
+        // round-robin allows only in a single-validator network.
+        self.prepare_next_view(msg.round, proposed).await;
     }
 
-    async fn handle_verify(&mut self, msg: Verify) {
+    async fn handle_verify(&self, msg: Verify) {
         let proposer_valid = self.validators.lookup(&msg.proposer).is_some();
         if !proposer_valid {
             warn!(proposer = %msg.proposer, "unknown proposer");
@@ -521,28 +596,32 @@ impl Actor {
 
                 debug!(payload = %msg.payload, "verify succeeded");
                 // Record block info for future parent lookups (critical for reth mode)
-                match self.block_info.write() {
-                    Ok(mut guard) => {
-                        guard.insert(
-                            msg.payload,
-                            BlockInfo {
-                                number: meta.number,
-                                hash: meta.hash,
-                                view: msg.round.view().get(),
-                                proposer: msg.proposer.clone(),
-                                timestamp: meta.timestamp,
-                                timestamp_millis: meta.timestamp_millis,
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        error!(error = %e, "block_info lock poisoned during verify record");
-                    }
-                }
+                self.record_block_info(
+                    msg.payload,
+                    BlockInfo {
+                        number: meta.number,
+                        hash: meta.hash,
+                        view: msg.round.view().get(),
+                        proposer: msg.proposer.clone(),
+                        timestamp: meta.timestamp,
+                        timestamp_millis: meta.timestamp_millis,
+                    },
+                );
                 if let Some(ref m) = self.metrics {
                     m.inc_blocks_verified();
                 }
                 let _ = msg.response.send(true);
+
+                // Vote first, then speculate: this block is the parent the
+                // next view will most likely build on, and if we lead that
+                // view we would rather have its payload already building.
+                let verified = Parent {
+                    digest: msg.payload,
+                    hash: meta.hash,
+                    number: meta.number,
+                    timestamp_millis: meta.timestamp_millis,
+                };
+                self.prepare_next_view(msg.round, verified).await;
             }
             Ok(ValidationResult::Invalid(reason)) => {
                 warn!(payload = %msg.payload, reason = %reason, "verify failed");
@@ -562,7 +641,179 @@ impl Actor {
         }
     }
 
-    async fn handle_broadcast(&mut self, msg: Broadcast) {
+    async fn handle_broadcast(&self, msg: Broadcast) {
         debug!(digest = %msg.digest, "broadcast request from engine");
+    }
+
+    /// Record a block so later views can look it up as a parent.
+    fn record_block_info(&self, digest: AllegroDigest, info: BlockInfo) {
+        match self.block_info.write() {
+            Ok(mut guard) => {
+                guard.insert(digest, info);
+            }
+            Err(e) => error!(error = %e, %digest, "block_info write lock poisoned"),
+        }
+    }
+
+    /// Start the next view's payload if this node leads it.
+    ///
+    /// `parent` is the block just accepted in `round`, which the next view
+    /// builds on unless it nullifies. Nothing here is load bearing: the builder
+    /// only reuses a prepared payload whose parent consensus actually asked
+    /// for, and builds cold otherwise.
+    async fn prepare_next_view(&self, round: Round, parent: Parent) {
+        let Some(schedule) = self.leader_schedule.as_ref() else {
+            return;
+        };
+        let next = Round::new(round.epoch(), round.view().next());
+        if !schedule.leads(next) {
+            return;
+        }
+
+        let request = child_request(next, round.view().get(), parent, schedule.me());
+        debug!(round = %next, parent = %parent.digest, "preparing payload for next view");
+        self.payload_builder.prepare_payload(&request).await;
+        if let Some(ref m) = self.metrics {
+            m.inc_payloads_prepared();
+        }
+    }
+}
+
+/// What a [`BuildPayloadRequest`] needs from its parent — less than a whole
+/// [`BlockInfo`], which neither path then has to clone.
+#[derive(Debug, Clone, Copy)]
+struct Parent {
+    digest: AllegroDigest,
+    hash: B256,
+    number: u64,
+    timestamp_millis: u64,
+}
+
+impl Parent {
+    fn new(digest: AllegroDigest, info: &BlockInfo) -> Self {
+        Self {
+            digest,
+            hash: info.hash,
+            number: info.number,
+            timestamp_millis: info.timestamp_millis,
+        }
+    }
+}
+
+/// The request for the block `round` should build on top of `parent`.
+///
+/// Proposing and preparing derive it identically, so a prepared payload always
+/// matches what the proposal later asks for.
+///
+/// Milliseconds strictly increase past the parent; seconds are derived from
+/// them, so `timestamp_millis / 1000 == timestamp` holds by construction
+/// (verify enforces it) and seconds stay non-decreasing.
+fn child_request(
+    round: Round,
+    parent_view: u64,
+    parent: Parent,
+    proposer: &PublicKey,
+) -> BuildPayloadRequest {
+    let now_millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let timestamp_millis = now_millis.max(parent.timestamp_millis.saturating_add(1));
+
+    BuildPayloadRequest {
+        parent_hash: parent.hash,
+        parent_number: parent.number,
+        parent_view,
+        parent_digest: parent.digest,
+        epoch: round.epoch().get(),
+        view: round.view().get(),
+        proposer: proposer.into(),
+        timestamp: timestamp_millis / 1000,
+        timestamp_millis,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use commonware_cryptography::ed25519::PrivateKey;
+
+    fn participants(n: u64) -> Set<PublicKey> {
+        Set::try_from(
+            (0..n)
+                .map(|seed| PrivateKey::from_seed(seed).public_key())
+                .collect::<Vec<_>>(),
+        )
+        .expect("distinct keys")
+    }
+
+    fn round(epoch: u64, view: u64) -> Round {
+        Round::new(Epoch::new(epoch), View::new(view))
+    }
+
+    fn schedule(set: &Set<PublicKey>, me: &PublicKey) -> LeaderSchedule {
+        LeaderSchedule::new(RoundRobin::default(), set, me.clone())
+    }
+
+    #[test]
+    fn exactly_one_validator_leads_each_round() {
+        let set = participants(4);
+        for view in 1..20 {
+            let leaders = set
+                .iter()
+                .filter(|pk| schedule(&set, pk).leads(round(0, view)))
+                .count();
+            assert_eq!(leaders, 1, "view {view}");
+        }
+    }
+
+    #[test]
+    fn leader_rotates_with_epoch_and_view() {
+        // Mirrors `RoundRobinElector`: index is `(epoch + view) % n` over the
+        // ordered participant set. If this ever diverges, preparation would be
+        // aimed at views this node does not lead.
+        let set = participants(3);
+        for (epoch, view) in [(0, 1), (0, 2), (0, 3), (1, 1), (2, 5)] {
+            let expected = set.get(((epoch + view) % 3) as usize).expect("in range");
+            assert!(
+                schedule(&set, expected).leads(round(epoch, view)),
+                "epoch {epoch} view {view}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_validator_leads_every_round() {
+        let set = participants(1);
+        let me = set.get(0).expect("one participant").clone();
+        for view in 1..10 {
+            assert!(schedule(&set, &me).leads(round(0, view)));
+        }
+    }
+
+    #[test]
+    fn a_non_validator_leads_nothing() {
+        let set = participants(3);
+        let outsider = PrivateKey::from_seed(99).public_key();
+        for view in 1..10 {
+            assert!(!schedule(&set, &outsider).leads(round(0, view)));
+        }
+    }
+
+    #[test]
+    fn timestamps_stay_ahead_of_the_parent() {
+        // A parent stamped far in the future still yields a strictly greater
+        // millisecond timestamp, with seconds derived from it.
+        let parent = Parent {
+            digest: AllegroDigest(B256::ZERO),
+            hash: B256::ZERO,
+            number: 7,
+            timestamp_millis: u64::MAX - 10,
+        };
+        let me = PrivateKey::from_seed(0).public_key();
+        let request = child_request(round(0, 2), 1, parent, &me);
+        assert!(request.timestamp_millis > parent.timestamp_millis);
+        assert_eq!(request.timestamp, request.timestamp_millis / 1000);
+        assert_eq!(request.parent_number, 7);
     }
 }

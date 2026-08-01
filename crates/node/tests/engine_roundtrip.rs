@@ -67,6 +67,7 @@ async fn build_validate_finalize_first_block() {
         launched.engine_handle(),
         launched.payload_builder_handle(),
         tracker.clone(),
+        None,
     );
 
     // ── 2. Build block 1 on top of genesis ──
@@ -81,7 +82,7 @@ async fn build_validate_finalize_first_block() {
             parent_digest: AllegroDigest::EMPTY,
             epoch: 0,
             view: 1,
-            proposer: [0u8; 32],
+            proposer: [0u8; 32].into(),
             timestamp,
             timestamp_millis,
         }),
@@ -146,7 +147,7 @@ async fn build_validate_finalize_first_block() {
             parent_digest: AllegroDigest(built.block_hash),
             epoch: 0,
             view: 2,
-            proposer: [0u8; 32],
+            proposer: [0u8; 32].into(),
             timestamp: timestamp2,
             timestamp_millis: timestamp2_millis,
         }),
@@ -159,4 +160,49 @@ async fn build_validate_finalize_first_block() {
         built2.block_number, built2.block_hash
     );
     assert_eq!(built2.block_number, 2);
+
+    // ── 6. Prepare block 3 ahead of the proposal, then propose it ──
+    let prepared_ts = now_secs().max(timestamp2 + 1);
+    let prepare_request = BuildPayloadRequest {
+        parent_hash: built2.block_hash,
+        parent_number: 2,
+        parent_view: 2,
+        parent_digest: AllegroDigest(built2.block_hash),
+        epoch: 0,
+        view: 3,
+        proposer: [0u8; 32].into(),
+        timestamp: prepared_ts,
+        timestamp_millis: prepared_ts * 1000,
+    };
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        builder.prepare_payload(&prepare_request),
+    )
+    .await
+    .expect("prepare_payload timed out");
+
+    // Ask for a far later timestamp than the prepared job froze. Reusing the
+    // job means the block carries the prepared timestamp, so the two cannot be
+    // confused for one another.
+    let built3 = tokio::time::timeout(
+        Duration::from_secs(30),
+        builder.build_payload(&BuildPayloadRequest {
+            timestamp: prepared_ts + 100,
+            timestamp_millis: (prepared_ts + 100) * 1000,
+            ..prepare_request
+        }),
+    )
+    .await
+    .expect("build_payload #3 timed out")
+    .expect("build_payload #3 failed");
+    eprintln!(
+        "built block 3: {} ({}) ts = {}",
+        built3.block_number, built3.block_hash, built3.timestamp
+    );
+    assert_eq!(built3.block_number, 3);
+    assert_eq!(
+        built3.timestamp, prepared_ts,
+        "proposal rebuilt from cold instead of reusing the prepared job"
+    );
+    assert_eq!(built3.timestamp_millis, prepared_ts * 1000);
 }

@@ -8,11 +8,19 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
+use alloy_rpc_types_engine::PayloadAttributes;
 
-use allegro_primitives::Digest as AllegroDigest;
+use allegro_primitives::{Digest as AllegroDigest, ProposerKey};
 
 // ── Types ───────────────────────────────────────────────────
+
+/// The millisecond timestamp consensus records for a block carrying `secs`.
+///
+/// Proposer and verifiers must derive the same value from the same block, so
+/// there is one definition.
+pub const fn millis_from_secs(secs: u64) -> u64 {
+    secs.saturating_mul(1000)
+}
 
 /// A block built by the payload builder.
 #[derive(Debug, Clone)]
@@ -23,6 +31,9 @@ pub struct BuiltPayload {
     pub block_hash: B256,
     /// Block number.
     pub block_number: u64,
+    /// Seconds timestamp the block actually carries, which a prepared payload
+    /// froze when its job started — so not necessarily the requested one.
+    pub timestamp: u64,
     /// Millisecond timestamp recorded in consensus bookkeeping. Deterministic:
     /// every node derives the same value for the same block.
     pub timestamp_millis: u64,
@@ -75,6 +86,20 @@ pub trait PayloadBuilder: Send + Sync {
         block_bytes: Vec<u8>,
         parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>;
+
+    /// Start building a payload before consensus asks for it, on the block
+    /// this node is predicted to build on next.
+    ///
+    /// A later [`build_payload`](Self::build_payload) for the same parent may
+    /// reuse the work; one for a different parent must not. Best-effort: the
+    /// default does nothing, and failing only costs the head start.
+    fn prepare_payload(
+        &self,
+        request: &BuildPayloadRequest,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let _ = request;
+        Box::pin(async {})
+    }
 }
 
 // ── EngineApiPayloadBuilder ────────────────────────────────
@@ -88,7 +113,7 @@ pub struct BuildPayloadRequest {
     pub parent_digest: AllegroDigest,
     pub epoch: u64,
     pub view: u64,
-    pub proposer: [u8; 32],
+    pub proposer: ProposerKey,
     /// Block timestamp (seconds since UNIX epoch) — Ethereum standard field.
     pub timestamp: u64,
     /// Millisecond-precision timestamp — the proposer guarantees it is
@@ -219,26 +244,13 @@ where
     EngineApiPayloadBuilder::new(Arc::new(build_fn), Arc::new(validate_fn))
 }
 
-/// Build forkchoice state and payload attributes from a consensus request.
-pub fn build_payload_attributes_from_request(
-    req: &BuildPayloadRequest,
-) -> (ForkchoiceState, PayloadAttributes) {
-    let forkchoice_state = ForkchoiceState {
-        head_block_hash: req.parent_hash,
-        safe_block_hash: req.parent_hash,
-        finalized_block_hash: req.parent_hash,
-    };
-    let pay_attrs = build_payload_attributes(req.parent_hash, req.timestamp);
-    (forkchoice_state, pay_attrs)
-}
-
 /// Build payload attributes for a new block.
 ///
 /// Returns attributes valid for Cancun+ (DEV chainspec):
 /// - `withdrawals: Some(vec![])` for Shanghai+
 /// - `parent_beacon_block_root: Some(ZERO)` for Cancun+
 /// - `slot_number: None` / `target_gas_limit: None` since Amsterdam not activated.
-pub fn build_payload_attributes(_parent_hash: B256, timestamp: u64) -> PayloadAttributes {
+pub fn build_payload_attributes(timestamp: u64) -> PayloadAttributes {
     PayloadAttributes {
         timestamp,
         prev_randao: B256::ZERO,
@@ -256,7 +268,7 @@ mod executor_tests {
 
     #[test]
     fn attrs_are_valid_for_cancun() {
-        let attrs = build_payload_attributes(B256::ZERO, 1_000_000);
+        let attrs = build_payload_attributes(1_000_000);
         assert!(attrs.withdrawals.is_some());
         assert!(attrs.withdrawals.unwrap().is_empty());
         assert!(attrs.parent_beacon_block_root.is_some());

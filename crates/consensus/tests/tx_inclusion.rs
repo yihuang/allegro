@@ -85,7 +85,7 @@ fn build_block(
     parent_view: u64,
     epoch: u64,
     view: u64,
-    proposer: [u8; 32],
+    proposer: ProposerKey,
     timestamp: u64,
     txs: Vec<TxEnvelope>,
 ) -> Result<BuiltPayload, String> {
@@ -122,7 +122,7 @@ fn build_block(
             epoch,
             view,
             parent_view,
-            proposer: ProposerKey(proposer),
+            proposer,
         }),
     };
     let block_hash = header.hash_slow();
@@ -138,6 +138,7 @@ fn build_block(
         block_bytes: alloy_rlp::encode(&block),
         block_hash,
         block_number: parent_number + 1,
+        timestamp: block.header.inner.timestamp,
         timestamp_millis: block.header.timestamp_millis,
     })
 }
@@ -427,7 +428,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
 
 #[test]
 fn test_empty_block_is_valid() {
-    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, vec![]).expect("build");
+    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, vec![]).expect("build");
     assert!(matches!(
         validate_block(&block.block_bytes),
         Ok(ValidationResult::Valid(_))
@@ -441,7 +442,7 @@ fn test_empty_block_is_valid() {
 #[test]
 fn test_block_with_one_tx_is_valid() {
     let txs = vec![tx_envelope(b"hello".to_vec())];
-    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, txs).expect("build");
+    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, txs).expect("build");
     assert!(matches!(
         validate_block(&block.block_bytes),
         Ok(ValidationResult::Valid(_))
@@ -459,13 +460,14 @@ fn test_block_with_one_tx_is_valid() {
 fn test_blocks_contain_only_drained_txs() {
     // Block A: 1 tx
     let txs_a = vec![tx_envelope(b"only_in_a".to_vec())];
-    let block_a = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, txs_a).expect("build_a");
+    let block_a =
+        build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, txs_a).expect("build_a");
     assert_eq!(decode_txs(&block_a.block_bytes).unwrap().len(), 1);
 
     // Block B: different tx (only_in_a must not appear)
     let txs_b = vec![tx_envelope(b"only_in_b".to_vec())];
     let block_b =
-        build_block(block_a.block_hash, 1, 0, 0, 1, [1u8; 32], 200, txs_b).expect("build_b");
+        build_block(block_a.block_hash, 1, 0, 0, 1, [1u8; 32].into(), 200, txs_b).expect("build_b");
     let decoded_b = decode_txs(&block_b.block_bytes).unwrap();
     assert_eq!(decoded_b.len(), 1);
     assert_eq!(extract_data(&decoded_b[0]), b"only_in_b");
@@ -477,7 +479,8 @@ fn test_blocks_contain_only_drained_txs() {
 
 #[test]
 fn test_truncated_block_fails_validation() {
-    let payload = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, vec![]).expect("build");
+    let payload =
+        build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, vec![]).expect("build");
     // Truncate to corrupt
     let truncated = payload.block_bytes[..payload.block_bytes.len().saturating_sub(10)].to_vec();
     assert!(validate_block(&truncated).is_err());

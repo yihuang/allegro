@@ -30,8 +30,8 @@ pub use block::Block;
 pub use engine::{start_simplex_engine, EngineConfig, StartedEngine};
 pub use error::ConsensusError;
 pub use executor::{
-    build_payload_attributes, build_payload_attributes_from_request, create_reth_payload_builder,
-    BlockMeta, BuildPayloadRequest, BuiltPayload, EngineApiPayloadBuilder, PayloadBuilder,
+    build_payload_attributes, create_reth_payload_builder, millis_from_secs, BlockMeta,
+    BuildPayloadRequest, BuiltPayload, EngineApiPayloadBuilder, PayloadBuilder,
     ValidateBlockRequest, ValidationResult,
 };
 pub use metrics::ConsensusMetrics;

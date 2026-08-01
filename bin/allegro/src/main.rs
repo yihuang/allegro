@@ -409,6 +409,7 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring
             reth.engine_handle.clone(),
             reth.payload_handle,
             tracker.clone(),
+            metrics.clone(),
         ));
         let (finalized_tx, finalized_rx) = futures::channel::mpsc::channel(32);
 

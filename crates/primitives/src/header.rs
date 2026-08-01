@@ -45,6 +45,14 @@ impl From<[u8; 32]> for ProposerKey {
     }
 }
 
+impl From<&commonware_cryptography::ed25519::PublicKey> for ProposerKey {
+    fn from(key: &commonware_cryptography::ed25519::PublicKey) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(key.as_ref());
+        Self(bytes)
+    }
+}
+
 /// Consensus metadata attached to every Allegro block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AllegroConsensusContext {
@@ -74,13 +82,11 @@ impl AllegroConsensusContext {
         parent_view: u64,
         proposer: &commonware_cryptography::ed25519::PublicKey,
     ) -> Self {
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(proposer.as_ref());
         Self {
             epoch,
             view,
             parent_view,
-            proposer: ProposerKey(bytes),
+            proposer: proposer.into(),
         }
     }
 }

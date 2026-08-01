@@ -1,4 +1,4 @@
-//! Shared test support: an empty-block payload builder.
+//! Shared test support: an empty-block payload builder and actor harness.
 //!
 //! Production always builds through reth's engine API, but the deterministic
 //! runtime can't host a reth node, so these tests drive consensus with blocks
@@ -7,14 +7,118 @@
 #![allow(dead_code)] // each integration test binary uses a different subset
 
 use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use allegro_consensus::{
-    BlockMeta, BuildPayloadRequest, BuiltPayload, PayloadBuilder, ValidationResult,
+use allegro_consensus::application::{
+    self as app_actor, Actor, ActorConfig, BlockInfoMap, LeaderSchedule, Mailbox, ReceivedBlocks,
 };
-use allegro_primitives::{AllegroConsensusContext, AllegroHeader, ProposerKey};
+use allegro_consensus::{
+    BlockMeta, BuildPayloadRequest, BuiltPayload, PayloadBuilder, ValidationResult, ValidatorEntry,
+    ValidatorSet,
+};
+use allegro_primitives::{AllegroConsensusContext, AllegroHeader};
 use alloy_consensus::{Block as AlloyBlock, BlockBody, Sealable, TxEnvelope};
 use alloy_primitives::{keccak256, Address, Bloom, B256, B64, U256};
+use commonware_consensus::{
+    simplex::types::Context,
+    types::{Round, View},
+};
+use commonware_cryptography::{
+    ed25519::{PrivateKey, PublicKey},
+    Signer as _,
+};
+use commonware_utils::ordered::Set;
+
+// ── Clock ───────────────────────────────────────────────────
+
+pub fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+pub fn now_secs() -> u64 {
+    now_millis() / 1000
+}
+
+// ── Validators ──────────────────────────────────────────────
+
+/// `n` validators on `127.0.0.1`, plus the ordered participant set the engine
+/// elects over — index `i` in that set is what the leader schedule resolves to.
+pub fn build_validators(n: u64, base_port: u16) -> (ValidatorSet, Set<PublicKey>) {
+    let entries: Vec<ValidatorEntry> = (0..n)
+        .map(|seed| ValidatorEntry {
+            public_key: PrivateKey::from_seed(seed).public_key(),
+            ingress: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), base_port + seed as u16),
+            egress: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        })
+        .collect();
+    let participants = Set::try_from(
+        entries
+            .iter()
+            .map(|e| e.public_key.clone())
+            .collect::<Vec<_>>(),
+    )
+    .expect("distinct keys");
+    (ValidatorSet::from_entries(&entries), participants)
+}
+
+pub fn context(
+    round: Round,
+    leader: PublicKey,
+    parent: (View, allegro_primitives::Digest),
+) -> Context<allegro_primitives::Digest, PublicKey> {
+    Context {
+        round,
+        leader,
+        parent,
+    }
+}
+
+// ── Actor harness ───────────────────────────────────────────
+
+/// A running actor plus the stores tests inspect.
+pub struct Harness {
+    pub mailbox: Mailbox,
+    pub block_info: BlockInfoMap,
+    pub received: ReceivedBlocks,
+}
+
+/// Spawn an actor on the current tokio runtime, genesis-rooted at zero.
+///
+/// The task is aborted when the returned `Harness` and its mailbox are dropped
+/// at the end of the test.
+pub fn spawn_actor(
+    validators: ValidatorSet,
+    builder: Arc<dyn PayloadBuilder>,
+    leader_schedule: Option<LeaderSchedule>,
+) -> Harness {
+    let (pending_blocks, received, block_info) = app_actor::new_block_stores();
+    let (actor, mailbox) = Actor::new(ActorConfig {
+        validators,
+        mailbox_size: 1024,
+        proposals: None,
+        pending_blocks,
+        received_blocks: received.clone(),
+        block_info: block_info.clone(),
+        payload_builder: builder,
+        metrics: None,
+        genesis_hash: B256::ZERO,
+        genesis_timestamp: 0,
+        genesis_timestamp_millis: 0,
+        leader_schedule,
+    });
+    tokio::spawn(actor.run());
+    Harness {
+        mailbox,
+        block_info,
+        received,
+    }
+}
 
 /// Builds empty blocks so tests can drive consensus without an execution layer.
 #[derive(Clone, Default)]
@@ -76,7 +180,7 @@ pub fn build_empty_block(request: &BuildPayloadRequest) -> Result<BuiltPayload, 
             epoch: request.epoch,
             view: request.view,
             parent_view: request.parent_view,
-            proposer: ProposerKey(request.proposer),
+            proposer: request.proposer,
         }),
     };
     let block_hash = header.hash_slow();
@@ -94,6 +198,7 @@ pub fn build_empty_block(request: &BuildPayloadRequest) -> Result<BuiltPayload, 
         block_bytes: alloy_rlp::encode(&block),
         block_hash,
         block_number: number,
+        timestamp: request.timestamp,
         timestamp_millis: request.timestamp_millis,
     })
 }

@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use allegro_consensus::application::{self as app_actor, Actor, Mailbox};
+use allegro_consensus::application::{self as app_actor, Mailbox};
 use allegro_consensus::{
     config::ConsensusConfig, start_simplex_engine, Block, EngineConfig, ValidatorEntry,
     ValidatorSet,
@@ -30,7 +30,6 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_runtime::{deterministic, Clock, Metrics, Runner};
-use tokio::sync::oneshot;
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -52,34 +51,9 @@ fn make_validator(seed: u8, port: u16) -> ValidatorEntry {
     }
 }
 
-fn spawn_actor(
-    validators: ValidatorSet,
-) -> (Mailbox, oneshot::Sender<()>, app_actor::ReceivedBlocks) {
-    let (pending, received, block_info) = app_actor::new_block_stores();
-    let received_handle = received.clone();
-    let builder: Arc<dyn allegro_consensus::PayloadBuilder> = Arc::new(EmptyBlockBuilder);
-    let (actor, mailbox) = Actor::new(
-        validators,
-        1024,
-        None,
-        pending,
-        received,
-        block_info,
-        builder,
-        None,
-        B256::ZERO,
-        0,
-        0,
-    );
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-    tokio::spawn(async move {
-        let mut actor = actor;
-        tokio::select! {
-            _ = &mut shutdown_rx => {}
-            _ = actor.run() => {}
-        }
-    });
-    (mailbox, shutdown_tx, received_handle)
+fn spawn_actor(validators: ValidatorSet) -> (Mailbox, app_actor::ReceivedBlocks) {
+    let h = common::spawn_actor(validators, Arc::new(EmptyBlockBuilder), None);
+    (h.mailbox, h.received)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -90,7 +64,7 @@ fn spawn_actor(
 async fn test_consensus_block_production() {
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3000 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
-    let (mut mailbox, _shutdown, _received) = spawn_actor(validators.clone());
+    let (mut mailbox, _received) = spawn_actor(validators.clone());
 
     let genesis = mailbox.genesis(Epoch::new(0)).await;
     assert_eq!(genesis, Digest(B256::ZERO));
@@ -144,18 +118,14 @@ async fn test_verify_rejects_inconsistent_timestamp_millis() {
 
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3200 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
-    let (mut mailbox, _shutdown, received) = spawn_actor(validators.clone());
+    let (mut mailbox, received) = spawn_actor(validators.clone());
 
     let genesis = mailbox.genesis(Epoch::new(0)).await;
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let proposer = {
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(entries[1].public_key.as_ref());
-        bytes
-    };
+    let proposer = allegro_primitives::ProposerKey::from(&entries[1].public_key);
 
     let verify_crafted =
         |mailbox: &mut Mailbox, timestamp: u64, timestamp_millis: u64, view: u64| {

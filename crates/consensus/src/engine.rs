@@ -408,20 +408,28 @@ where
         metrics.clone(),
     );
 
-    // Create the application actor (registers genesis block info internally)
-    let (mut actor, mailbox) = application::Actor::new(
-        config.validators,
-        config.consensus_config.mailbox_size,
-        Some(config.proposals.clone()),
+    // Create the application actor (registers genesis block info internally).
+    // The leader schedule is built from the same participants the engine votes
+    // with, so the actor's prediction of the next view's leader matches the
+    // engine's election.
+    let (actor, mailbox) = application::Actor::new(application::ActorConfig {
+        validators: config.validators,
+        mailbox_size: config.consensus_config.mailbox_size,
+        proposals: Some(config.proposals.clone()),
         pending_blocks,
         received_blocks,
-        block_info.clone(),
-        config.payload_builder,
-        metrics.clone(),
-        config.genesis_hash,
-        config.genesis_timestamp,
-        config.genesis_timestamp_millis,
-    );
+        block_info: block_info.clone(),
+        payload_builder: config.payload_builder,
+        metrics: metrics.clone(),
+        genesis_hash: config.genesis_hash,
+        genesis_timestamp: config.genesis_timestamp,
+        genesis_timestamp_millis: config.genesis_timestamp_millis,
+        leader_schedule: Some(application::LeaderSchedule::new(
+            elector.clone(),
+            &participants,
+            public_key.clone(),
+        )),
+    });
 
     let page_cache = CacheRef::from_pooler(
         &context,

@@ -44,6 +44,14 @@ struct ConsensusMetricsInner {
     pub blocks_relayed: AtomicU64,
     /// Total failed block validations.
     pub failed_validations: AtomicU64,
+    /// Views this node predicted it leads and asked the builder to prepare.
+    /// The builder may no-op or fail, so this is not `hits + misses`.
+    pub payloads_prepared: AtomicU64,
+    /// Proposals that reused a prepared payload.
+    pub prepared_payload_hits: AtomicU64,
+    /// Proposals that had to build from cold — no prepared payload, or one
+    /// built on a parent consensus did not ask for.
+    pub prepared_payload_misses: AtomicU64,
 }
 
 impl ConsensusMetrics {
@@ -64,6 +72,9 @@ impl ConsensusMetrics {
             errors_total: AtomicU64::new(0),
             blocks_relayed: AtomicU64::new(0),
             failed_validations: AtomicU64::new(0),
+            payloads_prepared: AtomicU64::new(0),
+            prepared_payload_hits: AtomicU64::new(0),
+            prepared_payload_misses: AtomicU64::new(0),
         }))
     }
 
@@ -139,6 +150,23 @@ impl ConsensusMetrics {
     /// Record a failed validation.
     pub fn inc_failed_validations(&self) {
         self.0.failed_validations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a payload build started ahead of the proposal request.
+    pub fn inc_payloads_prepared(&self) {
+        self.0.payloads_prepared.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a proposal that reused a prepared payload.
+    pub fn inc_prepared_payload_hits(&self) {
+        self.0.prepared_payload_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a proposal that had to build from cold.
+    pub fn inc_prepared_payload_misses(&self) {
+        self.0
+            .prepared_payload_misses
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     // ── Accessors for test assertions ──
