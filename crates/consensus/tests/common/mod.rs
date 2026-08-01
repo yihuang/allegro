@@ -97,10 +97,21 @@ pub fn spawn_actor(
     builder: Arc<dyn PayloadBuilder>,
     leader_schedule: Option<LeaderSchedule>,
 ) -> Harness {
+    spawn_actor_limited(validators, builder, leader_schedule, 64)
+}
+
+/// [`spawn_actor`] with an explicit cap on handlers in flight.
+pub fn spawn_actor_limited(
+    validators: ValidatorSet,
+    builder: Arc<dyn PayloadBuilder>,
+    leader_schedule: Option<LeaderSchedule>,
+    max_concurrent_handlers: usize,
+) -> Harness {
     let (pending_blocks, received, block_info) = app_actor::new_block_stores();
     let (actor, mailbox) = Actor::new(ActorConfig {
         validators,
         mailbox_size: 1024,
+        max_concurrent_handlers,
         proposals: None,
         pending_blocks,
         received_blocks: received.clone(),

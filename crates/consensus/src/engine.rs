@@ -415,6 +415,7 @@ where
     let (actor, mailbox) = application::Actor::new(application::ActorConfig {
         validators: config.validators,
         mailbox_size: config.consensus_config.mailbox_size,
+        max_concurrent_handlers: config.consensus_config.max_concurrent_handlers,
         proposals: Some(config.proposals.clone()),
         pending_blocks,
         received_blocks,

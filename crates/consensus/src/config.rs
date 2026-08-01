@@ -11,6 +11,12 @@ pub struct ConsensusConfig {
     /// P2P mailbox size (message backlog per channel).
     pub mailbox_size: usize,
 
+    /// Cap on application-actor handlers in flight, so the mailbox keeps
+    /// its backpressure instead of draining into futures. Simplex needs a
+    /// handful per view; this only binds when something downstream has
+    /// stalled. Zero disables the cap.
+    pub max_concurrent_handlers: usize,
+
     /// Maximum time to wait for the leader's proposal before timing out.
     pub leader_timeout: Duration,
 
@@ -69,6 +75,7 @@ impl Default for ConsensusConfig {
     fn default() -> Self {
         Self {
             mailbox_size: 1024,
+            max_concurrent_handlers: 64,
             leader_timeout: Duration::from_secs(2),
             certification_timeout: Duration::from_secs(4),
             timeout_retry: Duration::from_secs(1),

@@ -107,6 +107,14 @@ pub struct ConsensusArgs {
     )]
     pub mailbox_size: usize,
 
+    /// Cap on application-actor handlers in flight (0 disables).
+    #[arg(
+        long = "consensus.max-concurrent-handlers",
+        default_value = "64",
+        env = "ALLEGRO_MAX_CONCURRENT_HANDLERS"
+    )]
+    pub max_concurrent_handlers: usize,
+
     /// Activity timeout (views).
     #[arg(
         long = "consensus.activity-timeout",
@@ -270,6 +278,7 @@ fn build_validator_set(args: &ConsensusArgs, genesis_validators: ValidatorSet) -
 fn build_consensus_config(args: &ConsensusArgs) -> ConsensusConfig {
     ConsensusConfig {
         mailbox_size: args.mailbox_size,
+        max_concurrent_handlers: args.max_concurrent_handlers,
         leader_timeout: Duration::from_millis(args.leader_timeout_ms),
         certification_timeout: Duration::from_millis(args.cert_timeout_ms),
         timeout_retry: Duration::from_millis(args.timeout_retry_ms),

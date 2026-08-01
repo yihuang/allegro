@@ -14,7 +14,9 @@ use commonware_consensus::{
 };
 
 mod common;
-use common::{build_empty_block, build_validators, context, now_millis, EmptyBlockBuilder};
+use common::{
+    build_empty_block, build_validators, context, now_millis, EmptyBlockBuilder, Harness,
+};
 
 /// Parks the first build until released, so a test can observe what the actor
 /// does while a proposal is outstanding.
@@ -51,6 +53,28 @@ impl PayloadBuilder for GatedBuilder {
     }
 }
 
+/// A block from a peer, ready to be verified.
+fn insert_peer_block(h: &Harness, genesis: Digest) -> Digest {
+    let block = build_empty_block(&BuildPayloadRequest {
+        parent_hash: B256::ZERO,
+        parent_number: 0,
+        parent_view: 0,
+        parent_digest: genesis,
+        epoch: 0,
+        view: 1,
+        proposer: [7u8; 32].into(),
+        timestamp: now_millis() / 1000,
+        timestamp_millis: now_millis(),
+    })
+    .expect("built");
+    let digest = Digest(block.block_hash);
+    h.received
+        .write()
+        .unwrap()
+        .insert(digest, block.block_bytes);
+    digest
+}
+
 /// An outstanding build does not stall verification of another block. Under a
 /// sequential actor loop the verify below would never be answered.
 #[tokio::test]
@@ -70,25 +94,7 @@ async fn verify_is_answered_while_a_build_is_outstanding() {
     );
 
     let genesis = h.mailbox.genesis(Epoch::new(0)).await;
-
-    // A block from a peer, ready to be verified.
-    let peer_block = build_empty_block(&BuildPayloadRequest {
-        parent_hash: B256::ZERO,
-        parent_number: 0,
-        parent_view: 0,
-        parent_digest: genesis,
-        epoch: 0,
-        view: 1,
-        proposer: [7u8; 32].into(),
-        timestamp: now_millis() / 1000,
-        timestamp_millis: now_millis(),
-    })
-    .expect("built");
-    let peer_digest = Digest(peer_block.block_hash);
-    h.received
-        .write()
-        .unwrap()
-        .insert(peer_digest, peer_block.block_bytes);
+    let peer_digest = insert_peer_block(&h, genesis);
 
     // Park a proposal inside the payload builder.
     let round = |view| Round::new(Epoch::new(0), View::new(view));
@@ -111,6 +117,54 @@ async fn verify_is_answered_while_a_build_is_outstanding() {
         .expect("verify blocked behind the outstanding build")
         .expect("verify responded");
     assert!(verified);
+
+    gate_tx.send(()).expect("release build");
+    propose_rx.await.expect("proposed");
+}
+
+/// The cap is honoured: with room for one handler, the parked build does hold
+/// verification up — which is what makes it backpressure rather than a knob
+/// that reads well and does nothing.
+#[tokio::test]
+async fn a_cap_of_one_serializes_handlers() {
+    let (validators, participants) = build_validators(2, 4200);
+    let leader = participants.get(0).unwrap().clone();
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let mut h = common::spawn_actor_limited(
+        validators,
+        Arc::new(GatedBuilder {
+            gate: Mutex::new(Some(gate_rx)),
+            started: Mutex::new(Some(started_tx)),
+        }),
+        None,
+        1,
+    );
+
+    let genesis = h.mailbox.genesis(Epoch::new(0)).await;
+    let peer_digest = insert_peer_block(&h, genesis);
+
+    let round = |view| Round::new(Epoch::new(0), View::new(view));
+    let propose_rx = h
+        .mailbox
+        .propose(context(round(2), leader.clone(), (View::new(0), genesis)))
+        .await;
+    started_rx.await.expect("build started");
+
+    let verify_rx = h
+        .mailbox
+        .verify(
+            context(round(1), leader, (View::new(0), genesis)),
+            peer_digest,
+        )
+        .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), verify_rx)
+            .await
+            .is_err(),
+        "cap of one still let a second handler run"
+    );
 
     gate_tx.send(()).expect("release build");
     propose_rx.await.expect("proposed");
