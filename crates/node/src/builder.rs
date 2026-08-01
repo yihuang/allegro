@@ -235,10 +235,23 @@ impl PayloadBuilder for EnginePayloadBuilder {
             if let Some(ref m) = this.metrics {
                 m.inc_prepared_payload_misses();
             }
-            let payload_id = this.start_payload_job(&req).await?;
-            this.resolve_and_import(payload_id)
-                .await?
-                .ok_or_else(|| "payload job not found".to_string())
+
+            // A concurrent prepare can make reth drop this job before we
+            // resolve it. A fresh one is the same recovery the prepared path
+            // takes, and cheaper than losing the view to a timeout.
+            let mut last_id = None;
+            for _ in 0..2 {
+                let payload_id = this.start_payload_job(&req).await?;
+                if let Some(payload) = this.resolve_and_import(payload_id).await? {
+                    return Ok(payload);
+                }
+                debug!(%payload_id, "payload job vanished before resolving; retrying");
+                last_id = Some(payload_id);
+            }
+            Err(format!(
+                "payload job not found ({})",
+                last_id.expect("at least one attempt")
+            ))
         })
     }
 

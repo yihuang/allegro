@@ -272,6 +272,8 @@ pub struct ActorConfig {
     pub validators: ValidatorSet,
     /// Mailbox capacity (message backlog from the engine).
     pub mailbox_size: usize,
+    /// Cap on handlers in flight; zero disables it.
+    pub max_concurrent_handlers: usize,
     /// Collection point for proposed digests (for testing).
     pub proposals: Option<Arc<Mutex<Vec<AllegroDigest>>>>,
     /// Blocks we proposed (relay reads from here to broadcast).
@@ -303,6 +305,8 @@ pub struct ActorConfig {
 pub struct Actor {
     receiver: mpsc::Receiver<Message>,
     inner: Inner,
+    /// `None` disables the cap, matching `for_each_concurrent`.
+    max_concurrent_handlers: Option<usize>,
 }
 
 /// The actor's state, borrowed by every in-flight message handler. Fields
@@ -328,6 +332,7 @@ impl Actor {
         let ActorConfig {
             validators,
             mailbox_size,
+            max_concurrent_handlers,
             proposals,
             pending_blocks,
             received_blocks,
@@ -366,6 +371,8 @@ impl Actor {
         let mailbox = Mailbox::new(sender);
         let actor = Self {
             receiver,
+            max_concurrent_handlers: (max_concurrent_handlers > 0)
+                .then_some(max_concurrent_handlers),
             inner: Inner {
                 validators,
                 proposal_count: AtomicU64::new(0),
@@ -389,9 +396,13 @@ impl Actor {
     /// and so verified, before any view asks us to build on it.
     pub async fn run(self) {
         info!("application actor started");
-        let Self { receiver, inner } = self;
+        let Self {
+            receiver,
+            inner,
+            max_concurrent_handlers,
+        } = self;
         receiver
-            .for_each_concurrent(None, |msg| inner.handle(msg))
+            .for_each_concurrent(max_concurrent_handlers, |msg| inner.handle(msg))
             .await;
         warn!("application actor stopped");
     }
