@@ -27,18 +27,31 @@ use common::{
     build_empty_block, build_validators, context, now_millis, EmptyBlockBuilder, Harness,
 };
 
-/// Round-robin elects `(epoch + view) % n`, so with two validators
-/// `participants[1]` leads view 1 and `participants[0]` leads view 2.
-const VIEW_1_LEADER: usize = 1;
-const VIEW_2_LEADER: usize = 0;
-
 fn validators() -> (allegro_consensus::ValidatorSet, Set<PublicKey>) {
     build_validators(2, 4000)
 }
 
-fn schedule(participants: &Set<PublicKey>, index: usize) -> Option<LeaderSchedule> {
-    let me = participants.get(index).expect("in range").clone();
-    Some(LeaderSchedule::new(RoundRobin::default(), participants, me))
+fn schedule_for(participants: &Set<PublicKey>, me: &PublicKey) -> Option<LeaderSchedule> {
+    Some(LeaderSchedule::new(
+        RoundRobin::default(),
+        participants,
+        me.clone(),
+    ))
+}
+
+/// The participant the engine's elector puts in `view`'s leader slot —
+/// derived through the schedule itself, so these tests survive an elector
+/// change; the rotation formula is pinned once, in the unit tests.
+fn leader_of(participants: &Set<PublicKey>, view: u64) -> PublicKey {
+    participants
+        .iter()
+        .find(|p| {
+            schedule_for(participants, p)
+                .expect("schedule")
+                .leads(round(view))
+        })
+        .expect("some participant leads every view")
+        .clone()
 }
 
 fn round(view: u64) -> Round {
@@ -140,7 +153,7 @@ async fn through_view_1(
     let genesis = harness.mailbox.genesis(Epoch::new(0)).await;
     let ctx = context(
         round(1),
-        participants.get(VIEW_1_LEADER).unwrap().clone(),
+        leader_of(&participants, 1),
         (View::new(0), genesis),
     );
     let block = harness
@@ -158,7 +171,7 @@ async fn through_view_1(
     ViewOne {
         builder,
         harness,
-        participants,
+        view_2_leader: leader_of(&participants, 2),
         block,
     }
 }
@@ -166,15 +179,10 @@ async fn through_view_1(
 struct ViewOne {
     builder: RecordingBuilder,
     harness: Harness,
-    participants: Set<PublicKey>,
+    /// The participant that will lead view 2.
+    view_2_leader: PublicKey,
     /// The block verified in view 1 — the parent view 2 is expected to use.
     block: Digest,
-}
-
-impl ViewOne {
-    fn leader_of_view_2(&self) -> PublicKey {
-        self.participants.get(VIEW_2_LEADER).unwrap().clone()
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -185,7 +193,7 @@ impl ViewOne {
 /// against the block just verified.
 #[tokio::test]
 async fn verify_prepares_the_next_view_for_its_leader() {
-    let v = through_view_1(|p| schedule(p, VIEW_2_LEADER)).await;
+    let v = through_view_1(|p| schedule_for(p, &leader_of(p, 2))).await;
 
     let last = v.builder.last_prepare();
     assert_eq!(last.view, 2, "prepared the wrong view");
@@ -195,8 +203,14 @@ async fn verify_prepares_the_next_view_for_its_leader() {
 /// A node that does not lead the next view prepares nothing.
 #[tokio::test]
 async fn non_leader_of_the_next_view_prepares_nothing() {
-    // participants[1] leads view 1, so it does not lead view 2.
-    let v = through_view_1(|p| schedule(p, VIEW_1_LEADER)).await;
+    let v = through_view_1(|p| {
+        let bystander = p
+            .iter()
+            .find(|k| **k != leader_of(p, 2))
+            .expect("someone does not lead view 2");
+        schedule_for(p, bystander)
+    })
+    .await;
     assert!(
         v.builder.prepares().is_empty(),
         "prepared a view it does not lead"
@@ -219,8 +233,8 @@ async fn no_schedule_means_no_preparation() {
 /// block actually carries rather than the ones it asked for.
 #[tokio::test]
 async fn proposal_reuses_the_prepared_payload() {
-    let mut v = through_view_1(|p| schedule(p, VIEW_2_LEADER)).await;
-    let me = v.leader_of_view_2();
+    let mut v = through_view_1(|p| schedule_for(p, &leader_of(p, 2))).await;
+    let me = v.view_2_leader.clone();
     let prepared_millis = v.builder.last_prepare().timestamp_millis;
 
     // Let the clock move on, so a cold build would stamp a later time and the
@@ -261,8 +275,8 @@ async fn proposal_reuses_the_prepared_payload() {
 /// A payload prepared on one parent is never proposed on another.
 #[tokio::test]
 async fn prepared_payload_for_another_parent_is_discarded() {
-    let mut v = through_view_1(|p| schedule(p, VIEW_2_LEADER)).await;
-    let me = v.leader_of_view_2();
+    let mut v = through_view_1(|p| schedule_for(p, &leader_of(p, 2))).await;
+    let me = v.view_2_leader.clone();
     assert_eq!(v.builder.last_prepare().parent_hash, v.block.0);
 
     // The view-1 block never made it: view 2 builds on genesis instead.

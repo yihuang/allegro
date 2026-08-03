@@ -195,6 +195,21 @@ impl ConsensusMetrics {
     pub fn failed_validations(&self) -> u64 {
         self.0.failed_validations.load(Ordering::Relaxed)
     }
+
+    /// Views this node predicted it leads and asked the builder to prepare.
+    pub fn payloads_prepared(&self) -> u64 {
+        self.0.payloads_prepared.load(Ordering::Relaxed)
+    }
+
+    /// Proposals that reused a prepared payload.
+    pub fn prepared_payload_hits(&self) -> u64 {
+        self.0.prepared_payload_hits.load(Ordering::Relaxed)
+    }
+
+    /// Proposals that built from cold.
+    pub fn prepared_payload_misses(&self) -> u64 {
+        self.0.prepared_payload_misses.load(Ordering::Relaxed)
+    }
 }
 
 impl Default for ConsensusMetrics {

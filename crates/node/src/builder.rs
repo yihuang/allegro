@@ -181,9 +181,10 @@ impl Engine {
         }
 
         // 3. RLP-encode the block for the consensus wire format
+        let block_hash = sealed.hash();
         let block = sealed.into_block();
         Ok(Some(BuiltPayload {
-            block_hash: block.header.hash_slow(),
+            block_hash,
             block_number: block.header.number,
             // Read off the block, not echoed from the request: a prepared job
             // froze its timestamp, and bookkeeping must match what verifiers
@@ -266,12 +267,12 @@ impl PayloadBuilder for EnginePayloadBuilder {
             let block: EthBlock =
                 Decodable::decode(&mut &block_bytes[..]).map_err(|e| format!("rlp decode: {e}"))?;
 
-            // Hash, seal, and convert to engine execution data
-            let hash = block.header.hash_slow();
-            let parent_hash = block.header.parent_hash;
-            let number = block.header.number;
-            let timestamp = block.header.timestamp;
+            // Seal (hashing the header once) and convert to execution data
             let sealed = SealedBlock::seal_slow(block);
+            let hash = sealed.hash();
+            let parent_hash = sealed.header().parent_hash;
+            let number = sealed.header().number;
+            let timestamp = sealed.header().timestamp;
             let exec_data = EthPayloadTypes::block_to_payload(sealed, None);
 
             // Submit to the engine for validation

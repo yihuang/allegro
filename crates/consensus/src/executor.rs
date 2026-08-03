@@ -21,6 +21,12 @@ pub const fn millis_from_secs(secs: u64) -> u64 {
     secs.saturating_mul(1000)
 }
 
+/// The seconds field a block carries for a given millisecond timestamp — the
+/// inverse rounding of [`millis_from_secs`], shared for the same reason.
+pub const fn secs_from_millis(millis: u64) -> u64 {
+    millis / 1000
+}
+
 /// A block built by the payload builder.
 #[derive(Debug, Clone)]
 pub struct BuiltPayload {

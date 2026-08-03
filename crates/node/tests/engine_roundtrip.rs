@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use allegro_consensus::{
     executor::{BuildPayloadRequest, ValidationResult},
-    PayloadBuilder,
+    millis_from_secs, PayloadBuilder,
 };
 use allegro_node::{
     builder::{create_engine_payload_builder, ForkchoiceTracker},
@@ -72,7 +72,7 @@ async fn build_validate_finalize_first_block() {
 
     // ── 2. Build block 1 on top of genesis ──
     let timestamp = now_secs().max(launched.genesis_timestamp + 1);
-    let timestamp_millis = timestamp * 1000;
+    let timestamp_millis = millis_from_secs(timestamp);
     let built = tokio::time::timeout(
         Duration::from_secs(30),
         builder.build_payload(&BuildPayloadRequest {
@@ -137,7 +137,7 @@ async fn build_validate_finalize_first_block() {
 
     // ── 5. Build block 2 on top of block 1 — proves the head advanced ──
     let timestamp2 = now_secs().max(timestamp + 1);
-    let timestamp2_millis = timestamp2 * 1000;
+    let timestamp2_millis = millis_from_secs(timestamp2);
     let built2 = tokio::time::timeout(
         Duration::from_secs(30),
         builder.build_payload(&BuildPayloadRequest {
@@ -172,7 +172,7 @@ async fn build_validate_finalize_first_block() {
         view: 3,
         proposer: [0u8; 32].into(),
         timestamp: prepared_ts,
-        timestamp_millis: prepared_ts * 1000,
+        timestamp_millis: millis_from_secs(prepared_ts),
     };
     tokio::time::timeout(
         Duration::from_secs(30),
@@ -188,7 +188,7 @@ async fn build_validate_finalize_first_block() {
         Duration::from_secs(30),
         builder.build_payload(&BuildPayloadRequest {
             timestamp: prepared_ts + 100,
-            timestamp_millis: (prepared_ts + 100) * 1000,
+            timestamp_millis: millis_from_secs(prepared_ts + 100),
             ..prepare_request
         }),
     )
@@ -204,5 +204,5 @@ async fn build_validate_finalize_first_block() {
         built3.timestamp, prepared_ts,
         "proposal rebuilt from cold instead of reusing the prepared job"
     );
-    assert_eq!(built3.timestamp_millis, prepared_ts * 1000);
+    assert_eq!(built3.timestamp_millis, millis_from_secs(prepared_ts));
 }

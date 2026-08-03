@@ -23,7 +23,6 @@
 //! ever move on finalization.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
@@ -43,7 +42,7 @@ use tracing::{debug, error, info, warn};
 
 use allegro_primitives::Digest as AllegroDigest;
 
-use crate::executor::{BuildPayloadRequest, PayloadBuilder, ValidationResult};
+use crate::executor::{secs_from_millis, BuildPayloadRequest, PayloadBuilder, ValidationResult};
 use crate::metrics::ConsensusMetrics;
 use crate::validators::ValidatorSet;
 
@@ -283,11 +282,6 @@ impl LeaderSchedule {
         }
     }
 
-    /// This node's public key.
-    pub fn me(&self) -> &PublicKey {
-        &self.me
-    }
-
     /// Whether this node leads `round`.
     pub fn leads(&self, round: Round) -> bool {
         self.me_index == Some(self.elector.elect(round, None))
@@ -343,7 +337,6 @@ pub struct Actor {
 /// mirror [`ActorConfig`], which documents them.
 struct Inner {
     validators: ValidatorSet,
-    proposal_count: AtomicU64,
     proposals: Arc<Mutex<Vec<AllegroDigest>>>,
     pending_blocks: PendingBlocks,
     received_blocks: ReceivedBlocks,
@@ -403,7 +396,6 @@ impl Actor {
                 .then_some(max_concurrent_handlers),
             inner: Inner {
                 validators,
-                proposal_count: AtomicU64::new(0),
                 proposals: proposals.unwrap_or_else(|| Arc::new(Mutex::new(Vec::new()))),
                 pending_blocks,
                 received_blocks,
@@ -454,7 +446,6 @@ impl Inner {
     }
 
     async fn handle_propose(&self, msg: Propose) {
-        let count = self.proposal_count.fetch_add(1, Ordering::Relaxed) + 1;
         let parent_digest = msg.parent.1;
         let parent_view = msg.parent.0;
 
@@ -463,7 +454,6 @@ impl Inner {
             leader = %msg.leader,
             parent_view = %parent_view.get(),
             parent_digest = %parent_digest,
-            count,
             "handle_propose"
         );
 
@@ -617,7 +607,7 @@ impl Inner {
                 // could pin timestamp_millis arbitrarily far ahead and
                 // max(now_millis, parent) would ratchet it into every
                 // descendant block.
-                if meta.timestamp_millis / 1000 != meta.timestamp {
+                if secs_from_millis(meta.timestamp_millis) != meta.timestamp {
                     warn!(
                         payload = %msg.payload,
                         timestamp = meta.timestamp,
@@ -690,7 +680,7 @@ impl Inner {
             return;
         }
 
-        let request = child_request(next, round.view().get(), parent, schedule.me());
+        let request = child_request(next, round.view().get(), parent, &schedule.me);
         debug!(round = %next, parent = %parent.digest, "preparing payload for next view");
         self.payload_builder.prepare_payload(&request).await;
         if let Some(ref m) = self.metrics {
@@ -748,7 +738,7 @@ fn child_request(
         epoch: round.epoch().get(),
         view: round.view().get(),
         proposer: proposer.into(),
-        timestamp: timestamp_millis / 1000,
+        timestamp: secs_from_millis(timestamp_millis),
         timestamp_millis,
     }
 }

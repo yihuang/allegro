@@ -130,11 +130,11 @@ async fn verify_crafted(
         .write()
         .unwrap()
         .insert(digest, payload.block_bytes);
-    let ctx = Context {
-        round: Round::new(Epoch::new(0), View::new(view)),
+    let ctx = common::context(
+        Round::new(Epoch::new(0), View::new(view)),
         leader,
-        parent: ctx_parent,
-    };
+        ctx_parent,
+    );
     let mut mb = mailbox.clone();
     mb.verify(ctx, digest).await.await.unwrap()
 }
@@ -144,9 +144,9 @@ async fn verify_crafted(
 async fn test_verify_rejects_inconsistent_timestamp_millis() {
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3200 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
-    let (mailbox, received) = spawn_actor(validators.clone());
+    let (mut mailbox, received) = spawn_actor(validators.clone());
 
-    let genesis = mailbox.clone().genesis(Epoch::new(0)).await;
+    let genesis = mailbox.genesis(Epoch::new(0)).await;
     let now = common::now_secs();
     let proposer = allegro_primitives::ProposerKey::from(&entries[1].public_key);
 
@@ -194,9 +194,9 @@ async fn test_verify_rejects_inconsistent_timestamp_millis() {
 async fn test_verify_rejects_wrong_parent() {
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3300 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
-    let (mailbox, received) = spawn_actor(validators.clone());
+    let (mut mailbox, received) = spawn_actor(validators.clone());
 
-    let genesis = mailbox.clone().genesis(Epoch::new(0)).await;
+    let genesis = mailbox.genesis(Epoch::new(0)).await;
     let now = common::now_secs();
 
     let crafted = |parent_hash: B256, view: u64| BuildPayloadRequest {
