@@ -16,7 +16,11 @@
 //! 4. `Broadcast` — engine asks to broadcast a block (handled by the relay)
 //!
 //! Accepting a block also starts the next view's payload, when this node is
-//! the one that will propose it.
+//! the one that will propose it. The forkchoice update that registers the job
+//! moves the execution layer's head to the just-verified block *before* any
+//! quorum exists: RPC `latest` may briefly name a block that never notarizes,
+//! rewound by the next view's forkchoice update. `safe` and `finalized` only
+//! ever move on finalization.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -443,20 +447,13 @@ impl Inner {
             m.inc_blocks_proposed();
         }
 
-        // Look up parent block info from our tracking. A parent we have never
-        // seen cannot be built on: substituting genesis here would get a
-        // genesis-parented block notarized (see the payload-failure path
-        // below), so skip the view instead.
-        let parent = match self.block_info.read() {
-            Ok(guard) => guard
-                .get(&parent_digest)
-                .map(|info| Parent::new(parent_digest, info)),
-            Err(e) => {
-                error!(error = %e, "block_info read lock poisoned");
-                // Drop the responder (see the payload-failure path below).
-                return;
-            }
-        };
+        // A parent we have never seen cannot be built on: substituting genesis
+        // here would get a genesis-parented block notarized (see the
+        // payload-failure path below), so skip the view instead — dropping the
+        // responder, not answering.
+        let parent = self
+            .lookup_block_info(&parent_digest)
+            .map(|info| Parent::new(parent_digest, &info));
         let Some(parent) = parent else {
             warn!(%parent_digest, "no block info for parent; skipping view");
             if let Some(ref m) = self.metrics {
@@ -545,6 +542,21 @@ impl Inner {
             return;
         }
 
+        // Resolve the consensus parent to its execution-layer hash before
+        // fetching the block: the digest bytes cannot stand in for the hash
+        // (they differ at genesis — EMPTY digest vs chainspec hash). An
+        // unknown parent cannot be checked, so withhold the vote; if the
+        // block is good, the quorum carries it without us.
+        let expected_parent_hash = self.lookup_block_info(&msg.parent.1).map(|info| info.hash);
+        let Some(expected_parent_hash) = expected_parent_hash else {
+            warn!(parent = %msg.parent.1, "no block info for parent; withholding vote");
+            if let Some(ref m) = self.metrics {
+                m.inc_failed_validations();
+            }
+            let _ = msg.response.send(false);
+            return;
+        };
+
         // Look up block bytes (ours or received from peer)
         let block_bytes = match self.pending_blocks.lock() {
             Ok(guard) => guard.get(&msg.payload).cloned(),
@@ -571,20 +583,32 @@ impl Inner {
             return;
         };
 
-        // Delegate validation to the payload builder
-        let expected_parent_hash = msg.parent.1 .0;
         debug!(
             payload = %msg.payload,
             round = %msg.round,
             "verifying block"
         );
 
-        match self
-            .payload_builder
-            .validate_block(block_bytes, expected_parent_hash)
-            .await
-        {
+        match self.payload_builder.validate_block(block_bytes).await {
             Ok(ValidationResult::Valid(meta)) => {
+                // The execution layer proves the block valid on its own
+                // header's parent; only consensus knows which parent it
+                // chose, so the linkage is enforced here — once, for every
+                // builder.
+                if meta.parent_hash != expected_parent_hash {
+                    warn!(
+                        payload = %msg.payload,
+                        block_parent = %meta.parent_hash,
+                        consensus_parent = %expected_parent_hash,
+                        "verify failed: block does not extend the consensus parent"
+                    );
+                    if let Some(ref m) = self.metrics {
+                        m.inc_failed_validations();
+                    }
+                    let _ = msg.response.send(false);
+                    return;
+                }
+
                 // The seconds field is the execution layer's to validate;
                 // the invariant only consensus can check is that the
                 // millisecond field agrees with it. Without this, a proposer
@@ -654,6 +678,17 @@ impl Inner {
 
     async fn handle_broadcast(&self, msg: Broadcast) {
         debug!(digest = %msg.digest, "broadcast request from engine");
+    }
+
+    /// Read a block's record; a poisoned lock is logged and reads as absent.
+    fn lookup_block_info(&self, digest: &AllegroDigest) -> Option<BlockInfo> {
+        match self.block_info.read() {
+            Ok(guard) => guard.get(digest).cloned(),
+            Err(e) => {
+                error!(error = %e, "block_info read lock poisoned");
+                None
+            }
+        }
     }
 
     /// Record a block so later views can look it up as a parent.

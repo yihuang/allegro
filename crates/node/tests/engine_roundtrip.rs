@@ -100,7 +100,7 @@ async fn build_validate_finalize_first_block() {
     // ── 3. Validate block 1 (as a peer would) ──
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        builder.validate_block(built.block_bytes.clone(), launched.genesis_hash),
+        builder.validate_block(built.block_bytes.clone()),
     )
     .await
     .expect("validate_block timed out")

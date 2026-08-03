@@ -11,8 +11,8 @@ use std::{
 
 use allegro_consensus::application::{self as app_actor, Mailbox};
 use allegro_consensus::{
-    config::ConsensusConfig, start_simplex_engine, Block, EngineConfig, ValidatorEntry,
-    ValidatorSet,
+    config::ConsensusConfig, start_simplex_engine, Block, BuildPayloadRequest, EngineConfig,
+    ValidatorEntry, ValidatorSet,
 };
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, Digest};
@@ -28,7 +28,10 @@ use commonware_consensus::{
     types::{Epoch, Round, View},
     Automaton,
 };
-use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
+use commonware_cryptography::{
+    ed25519::{PrivateKey, PublicKey},
+    Signer as _,
+};
 use commonware_runtime::{deterministic, Clock, Metrics, Runner};
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -108,28 +111,51 @@ async fn test_consensus_block_production() {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  Test: timestamp_millis must agree with the seconds timestamp
+//  Crafted-block verification
 // ═══════════════════════════════════════════════════════════
 
+/// Build an empty block for `req`, hand it to the actor as a received block,
+/// and ask it to verify against the consensus parent `ctx_parent`.
+async fn verify_crafted(
+    mailbox: &Mailbox,
+    received: &app_actor::ReceivedBlocks,
+    leader: PublicKey,
+    req: BuildPayloadRequest,
+    ctx_parent: (View, Digest),
+) -> bool {
+    let view = req.view;
+    let payload = common::build_empty_block(&req).expect("build crafted block");
+    let digest = Digest(payload.block_hash);
+    received
+        .write()
+        .unwrap()
+        .insert(digest, payload.block_bytes);
+    let ctx = Context {
+        round: Round::new(Epoch::new(0), View::new(view)),
+        leader,
+        parent: ctx_parent,
+    };
+    let mut mb = mailbox.clone();
+    mb.verify(ctx, digest).await.await.unwrap()
+}
+
+/// timestamp_millis must agree with the seconds timestamp.
 #[tokio::test]
 async fn test_verify_rejects_inconsistent_timestamp_millis() {
-    use allegro_consensus::BuildPayloadRequest;
-    use std::time::SystemTime;
-
     let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3200 + i as u16)).collect();
     let validators = ValidatorSet::from_entries(&entries);
-    let (mut mailbox, received) = spawn_actor(validators.clone());
+    let (mailbox, received) = spawn_actor(validators.clone());
 
-    let genesis = mailbox.genesis(Epoch::new(0)).await;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let genesis = mailbox.clone().genesis(Epoch::new(0)).await;
+    let now = common::now_secs();
     let proposer = allegro_primitives::ProposerKey::from(&entries[1].public_key);
 
-    let verify_crafted =
-        |mailbox: &mut Mailbox, timestamp: u64, timestamp_millis: u64, view: u64| {
-            let payload = common::build_empty_block(&BuildPayloadRequest {
+    let verify_ts = |timestamp: u64, timestamp_millis: u64, view: u64| {
+        verify_crafted(
+            &mailbox,
+            &received,
+            entries[1].public_key.clone(),
+            BuildPayloadRequest {
                 parent_hash: genesis.0,
                 parent_number: 0,
                 parent_view: 1,
@@ -139,38 +165,78 @@ async fn test_verify_rejects_inconsistent_timestamp_millis() {
                 proposer,
                 timestamp,
                 timestamp_millis,
-            })
-            .expect("build crafted block");
-            let digest = Digest(payload.block_hash);
-            received
-                .write()
-                .unwrap()
-                .insert(digest, payload.block_bytes);
-            let ctx = Context {
-                round: Round::new(Epoch::new(0), View::new(view)),
-                leader: entries[1].public_key.clone(),
-                parent: (View::new(0), genesis),
-            };
-            let mut mb = mailbox.clone();
-            async move { mb.verify(ctx, digest).await.await.unwrap() }
-        };
+            },
+            (View::new(0), genesis),
+        )
+    };
 
     // Millis pinned an hour past the seconds field → rejected
     assert!(
-        !verify_crafted(&mut mailbox, now, (now + 3600) * 1000, 1).await,
+        !verify_ts(now, (now + 3600) * 1000, 1).await,
         "timestamp_millis disagreeing with timestamp must be rejected"
     );
 
     // Millis regressed below the seconds field → rejected
     assert!(
-        !verify_crafted(&mut mailbox, now, (now - 5) * 1000, 2).await,
+        !verify_ts(now, (now - 5) * 1000, 2).await,
         "lagging timestamp_millis must be rejected"
     );
 
     // Consistent, including sub-second precision → accepted
     assert!(
-        verify_crafted(&mut mailbox, now, now * 1000 + 999, 3).await,
+        verify_ts(now, now * 1000 + 999, 3).await,
         "consistent timestamp_millis must be accepted"
+    );
+}
+
+/// The block must extend the parent consensus chose.
+#[tokio::test]
+async fn test_verify_rejects_wrong_parent() {
+    let entries: Vec<ValidatorEntry> = (0..4).map(|i| make_validator(i, 3300 + i as u16)).collect();
+    let validators = ValidatorSet::from_entries(&entries);
+    let (mailbox, received) = spawn_actor(validators.clone());
+
+    let genesis = mailbox.clone().genesis(Epoch::new(0)).await;
+    let now = common::now_secs();
+
+    let crafted = |parent_hash: B256, view: u64| BuildPayloadRequest {
+        parent_hash,
+        parent_number: 0,
+        parent_view: 0,
+        parent_digest: genesis,
+        epoch: 0,
+        view,
+        proposer: allegro_primitives::ProposerKey::from(&entries[1].public_key),
+        timestamp: now,
+        timestamp_millis: allegro_consensus::millis_from_secs(now),
+    };
+    let leader = entries[1].public_key.clone();
+
+    // Internally valid, but extends a parent other than the one consensus
+    // names in the verify context.
+    assert!(
+        !verify_crafted(
+            &mailbox,
+            &received,
+            leader.clone(),
+            crafted(B256::from([0xaa; 32]), 1),
+            (View::new(0), genesis),
+        )
+        .await,
+        "a block extending a different parent must be rejected"
+    );
+
+    // An unknown parent digest cannot be checked at all → vote withheld.
+    assert!(
+        !verify_crafted(
+            &mailbox,
+            &received,
+            leader,
+            crafted(genesis.0, 2),
+            (View::new(1), Digest(B256::from([0xbb; 32]))),
+        )
+        .await,
+        "a block with an unknown parent must not collect a vote"
     );
 }
 

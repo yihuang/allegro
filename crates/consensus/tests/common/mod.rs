@@ -147,7 +147,6 @@ impl PayloadBuilder for EmptyBlockBuilder {
     fn validate_block(
         &self,
         block_bytes: Vec<u8>,
-        _parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
         let result = validate_empty_block(&block_bytes);
         Box::pin(async move { result })
@@ -243,6 +242,7 @@ fn validate_empty_block(block_bytes: &[u8]) -> Result<ValidationResult, String> 
 
     Ok(ValidationResult::Valid(BlockMeta {
         hash: header.hash_slow(),
+        parent_hash: header.inner.parent_hash,
         number: header.inner.number,
         timestamp: header.inner.timestamp,
         timestamp_millis: header.timestamp_millis,

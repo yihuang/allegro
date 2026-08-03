@@ -47,9 +47,8 @@ impl PayloadBuilder for GatedBuilder {
     fn validate_block(
         &self,
         block_bytes: Vec<u8>,
-        parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
-        EmptyBlockBuilder.validate_block(block_bytes, parent_hash)
+        EmptyBlockBuilder.validate_block(block_bytes)
     }
 }
 

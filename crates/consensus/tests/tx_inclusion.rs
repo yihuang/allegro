@@ -159,6 +159,7 @@ fn validate_block(block_bytes: &[u8]) -> Result<ValidationResult, String> {
     let hash = block.header.hash_slow();
     Ok(ValidationResult::Valid(BlockMeta {
         hash,
+        parent_hash: block.header.inner.parent_hash,
         number: block.header.inner.number,
         timestamp: block.header.inner.timestamp,
         timestamp_millis: block.header.timestamp_millis,
@@ -191,10 +192,9 @@ impl allegro_consensus::PayloadBuilder for RecordingBuilder {
     fn validate_block(
         &self,
         b: Vec<u8>,
-        h: B256,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ValidationResult, String>> + Send>>
     {
-        self.inner.validate_block(b, h)
+        self.inner.validate_block(b)
     }
 }
 

@@ -44,6 +44,10 @@ pub struct BuiltPayload {
 pub struct BlockMeta {
     /// Block hash (keccak256 of RLP-encoded header).
     pub hash: B256,
+    /// Parent hash the block's header names. Consensus compares it against
+    /// the parent it chose — reported rather than checked here, so no
+    /// implementation can forget a check it never owned.
+    pub parent_hash: B256,
     /// Block number.
     pub number: u64,
     /// Block timestamp (seconds since UNIX epoch).
@@ -80,11 +84,12 @@ pub trait PayloadBuilder: Send + Sync {
     /// Validate a block.
     ///
     /// Called when this node receives a proposed block from another validator.
-    /// Should execute the block and verify the state root.
+    /// Should execute the block and verify the state root. Consensus-level
+    /// invariants — the parent linkage, the millisecond timestamp — are
+    /// checked by the caller against the reported [`BlockMeta`].
     fn validate_block(
         &self,
         block_bytes: Vec<u8>,
-        parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>;
 
     /// Start building a payload before consensus asks for it, on the block
@@ -125,7 +130,6 @@ pub struct BuildPayloadRequest {
 #[derive(Debug, Clone)]
 pub struct ValidateBlockRequest {
     pub block_bytes: Vec<u8>,
-    pub parent_hash: B256,
 }
 
 // ── Closure type aliases for EngineApiPayloadBuilder ───────
@@ -210,13 +214,8 @@ impl PayloadBuilder for EngineApiPayloadBuilder {
     fn validate_block(
         &self,
         block_bytes: Vec<u8>,
-        parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
-        let req = ValidateBlockRequest {
-            block_bytes,
-            parent_hash,
-        };
-        (self.validate_fn)(req)
+        (self.validate_fn)(ValidateBlockRequest { block_bytes })
     }
 }
 

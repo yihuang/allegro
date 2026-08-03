@@ -258,23 +258,23 @@ impl PayloadBuilder for EnginePayloadBuilder {
     fn validate_block(
         &self,
         block_bytes: Vec<u8>,
-        _parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
         let this = self.0.clone();
         Box::pin(async move {
-            // 1. Decode the standard Ethereum block from the wire
+            // Decode the standard Ethereum block from the wire
             use reth_ethereum_primitives::Block as EthBlock;
             let block: EthBlock =
                 Decodable::decode(&mut &block_bytes[..]).map_err(|e| format!("rlp decode: {e}"))?;
 
-            // 2. Hash, seal, and convert to engine execution data
+            // Hash, seal, and convert to engine execution data
             let hash = block.header.hash_slow();
+            let parent_hash = block.header.parent_hash;
             let number = block.header.number;
             let timestamp = block.header.timestamp;
             let sealed = SealedBlock::seal_slow(block);
             let exec_data = EthPayloadTypes::block_to_payload(sealed, None);
 
-            // 3. Submit to the engine for validation
+            // Submit to the engine for validation
             let payload_status = this
                 .engine
                 .new_payload(exec_data)
@@ -291,6 +291,7 @@ impl PayloadBuilder for EnginePayloadBuilder {
                     // value its verifiers can't reproduce.
                     Ok(ValidationResult::Valid(BlockMeta {
                         hash,
+                        parent_hash,
                         number,
                         timestamp,
                         timestamp_millis: millis_from_secs(timestamp),
