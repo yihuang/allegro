@@ -82,6 +82,32 @@ pub fn new_block_stores() -> (PendingBlocks, ReceivedBlocks, BlockInfoMap) {
     )
 }
 
+/// Read a projection of a block's record; a poisoned lock is logged and reads
+/// as absent.
+pub fn with_block_info<T>(
+    map: &BlockInfoMap,
+    digest: &AllegroDigest,
+    f: impl FnOnce(&BlockInfo) -> T,
+) -> Option<T> {
+    match map.read() {
+        Ok(guard) => guard.get(digest).map(f),
+        Err(e) => {
+            error!(error = %e, "block_info read lock poisoned");
+            None
+        }
+    }
+}
+
+/// Record a block so later views can look it up as a parent.
+pub fn record_block_info(map: &BlockInfoMap, digest: AllegroDigest, info: BlockInfo) {
+    match map.write() {
+        Ok(mut guard) => {
+            guard.insert(digest, info);
+        }
+        Err(e) => error!(error = %e, %digest, "block_info write lock poisoned"),
+    }
+}
+
 // ── Messages ─────────────────────────────────────────────────
 
 /// Messages from the consensus engine to the application actor.
@@ -325,6 +351,9 @@ struct Inner {
     payload_builder: Arc<dyn PayloadBuilder>,
     metrics: Option<ConsensusMetrics>,
     leader_schedule: Option<LeaderSchedule>,
+    /// Genesis follows the digest convention like every other block:
+    /// `Digest(chainspec hash)`.
+    genesis_digest: AllegroDigest,
 }
 
 impl Actor {
@@ -349,27 +378,22 @@ impl Actor {
             leader_schedule,
         } = config;
 
-        // Register genesis block info
-        let genesis_digest = commonware_cryptography::Digest::EMPTY;
+        // Register genesis under its execution hash — the same digest
+        // convention as every other block, so no consumer special-cases it.
+        let genesis_digest = AllegroDigest(genesis_hash);
         let genesis_sk = commonware_cryptography::ed25519::PrivateKey::from_seed(0);
-        match block_info.write() {
-            Ok(mut guard) => {
-                guard.insert(
-                    genesis_digest,
-                    BlockInfo {
-                        number: 0,
-                        hash: genesis_hash,
-                        view: 0,
-                        proposer: genesis_sk.public_key(),
-                        timestamp: genesis_timestamp,
-                        timestamp_millis: genesis_timestamp_millis,
-                    },
-                );
-            }
-            Err(e) => {
-                error!(error = %e, "block_info write lock poisoned during actor init");
-            }
-        }
+        record_block_info(
+            &block_info,
+            genesis_digest,
+            BlockInfo {
+                number: 0,
+                hash: genesis_hash,
+                view: 0,
+                proposer: genesis_sk.public_key(),
+                timestamp: genesis_timestamp,
+                timestamp_millis: genesis_timestamp_millis,
+            },
+        );
 
         let (sender, receiver) = mpsc::channel(mailbox_size);
         let mailbox = Mailbox::new(sender);
@@ -387,6 +411,7 @@ impl Actor {
                 payload_builder,
                 metrics,
                 leader_schedule,
+                genesis_digest,
             },
         };
         (actor, mailbox)
@@ -424,9 +449,8 @@ impl Inner {
 
     async fn handle_genesis(&self, msg: Genesis) {
         info!(epoch = %msg.epoch.get(), "genesis");
-        let digest = commonware_cryptography::Digest::EMPTY;
         // Genesis block info was already registered in `new()`. Just respond.
-        let _ = msg.response.send(digest);
+        let _ = msg.response.send(self.genesis_digest);
     }
 
     async fn handle_propose(&self, msg: Propose) {
@@ -451,9 +475,9 @@ impl Inner {
         // here would get a genesis-parented block notarized (see the
         // payload-failure path below), so skip the view instead — dropping the
         // responder, not answering.
-        let parent = self
-            .lookup_block_info(&parent_digest)
-            .map(|info| Parent::new(parent_digest, &info));
+        let parent = with_block_info(&self.block_info, &parent_digest, |info| {
+            Parent::new(parent_digest, info)
+        });
         let Some(parent) = parent else {
             warn!(%parent_digest, "no block info for parent; skipping view");
             if let Some(ref m) = self.metrics {
@@ -477,36 +501,27 @@ impl Inner {
                 if let Some(ref m) = self.metrics {
                     m.inc_errors();
                 }
-                // Drop the responder without answering: proposing the EMPTY
-                // digest would get a genesis-parented "block" notarized and
-                // permanently poison parent tracking (every later view would
-                // build on genesis while finalization has moved past it).
-                // With no proposal the view times out and the next one
-                // retries on the same healthy parent.
+                // Drop the responder without answering: any digest sent here
+                // would name a block that does not exist. With no proposal
+                // the view times out and the next one retries on the same
+                // healthy parent.
                 return;
             }
         };
 
         let digest = AllegroDigest(payload.block_hash);
-        self.record_block_info(
-            digest,
-            BlockInfo {
-                number: payload.block_number,
-                hash: payload.block_hash,
-                view: msg.round.view().get(),
-                proposer: msg.leader.clone(),
-                // Builder-reported, so this record matches what verifiers
-                // derive from the block itself.
-                timestamp: payload.timestamp,
-                timestamp_millis: payload.timestamp_millis,
-            },
-        );
-        let proposed = Parent {
-            digest,
-            hash: payload.block_hash,
+        let info = BlockInfo {
             number: payload.block_number,
+            hash: payload.block_hash,
+            view: msg.round.view().get(),
+            proposer: msg.leader.clone(),
+            // Builder-reported, so this record matches what verifiers
+            // derive from the block itself.
+            timestamp: payload.timestamp,
             timestamp_millis: payload.timestamp_millis,
         };
+        let proposed = Parent::new(digest, &info);
+        record_block_info(&self.block_info, digest, info);
 
         // Store in pending_blocks so the relay can broadcast it
         match self.pending_blocks.lock() {
@@ -541,8 +556,6 @@ impl Inner {
             let _ = msg.response.send(false);
             return;
         }
-
-        let expected_parent_hash = self.parent_hash(&msg.parent.1);
 
         // Look up block bytes (ours or received from peer)
         let block_bytes = match self.pending_blocks.lock() {
@@ -581,7 +594,9 @@ impl Inner {
                 // The execution layer proves the block valid on its own
                 // header's parent; only consensus knows which parent it
                 // chose, so the linkage is enforced here — once, for every
-                // builder.
+                // builder. The expected hash is the parent digest itself,
+                // by the digest convention.
+                let expected_parent_hash = msg.parent.1.block_hash();
                 if meta.parent_hash != expected_parent_hash {
                     warn!(
                         payload = %msg.payload,
@@ -618,17 +633,16 @@ impl Inner {
 
                 debug!(payload = %msg.payload, "verify succeeded");
                 // Record block info for future parent lookups (critical for reth mode)
-                self.record_block_info(
-                    msg.payload,
-                    BlockInfo {
-                        number: meta.number,
-                        hash: meta.hash,
-                        view: msg.round.view().get(),
-                        proposer: msg.proposer.clone(),
-                        timestamp: meta.timestamp,
-                        timestamp_millis: meta.timestamp_millis,
-                    },
-                );
+                let info = BlockInfo {
+                    number: meta.number,
+                    hash: meta.hash,
+                    view: msg.round.view().get(),
+                    proposer: msg.proposer.clone(),
+                    timestamp: meta.timestamp,
+                    timestamp_millis: meta.timestamp_millis,
+                };
+                let verified = Parent::new(msg.payload, &info);
+                record_block_info(&self.block_info, msg.payload, info);
                 if let Some(ref m) = self.metrics {
                     m.inc_blocks_verified();
                 }
@@ -637,12 +651,6 @@ impl Inner {
                 // Vote first, then speculate: this block is the parent the
                 // next view will most likely build on, and if we lead that
                 // view we would rather have its payload already building.
-                let verified = Parent {
-                    digest: msg.payload,
-                    hash: meta.hash,
-                    number: meta.number,
-                    timestamp_millis: meta.timestamp_millis,
-                };
                 self.prepare_next_view(msg.round, verified).await;
             }
             Ok(ValidationResult::Invalid(reason)) => {
@@ -665,39 +673,6 @@ impl Inner {
 
     async fn handle_broadcast(&self, msg: Broadcast) {
         debug!(digest = %msg.digest, "broadcast request from engine");
-    }
-
-    /// The execution-layer hash of the block `digest` names.
-    ///
-    /// Every block we produce takes its own hash as its digest, so the two are
-    /// the same value — except at genesis, whose digest is `EMPTY` while its
-    /// hash comes from the chainspec. The record answers that one case; for
-    /// anything else the digest is the hash, which is what lets a node that
-    /// restarted with an empty map still verify what its peers propose.
-    fn parent_hash(&self, digest: &AllegroDigest) -> B256 {
-        self.lookup_block_info(digest)
-            .map_or(digest.0, |info| info.hash)
-    }
-
-    /// Read a block's record; a poisoned lock is logged and reads as absent.
-    fn lookup_block_info(&self, digest: &AllegroDigest) -> Option<BlockInfo> {
-        match self.block_info.read() {
-            Ok(guard) => guard.get(digest).cloned(),
-            Err(e) => {
-                error!(error = %e, "block_info read lock poisoned");
-                None
-            }
-        }
-    }
-
-    /// Record a block so later views can look it up as a parent.
-    fn record_block_info(&self, digest: AllegroDigest, info: BlockInfo) {
-        match self.block_info.write() {
-            Ok(mut guard) => {
-                guard.insert(digest, info);
-            }
-            Err(e) => error!(error = %e, %digest, "block_info write lock poisoned"),
-        }
     }
 
     /// Start the next view's payload if this node leads it.

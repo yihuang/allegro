@@ -5,7 +5,7 @@ use reth_engine_primitives::ConsensusEngineHandle;
 use reth_ethereum_engine_primitives::EthEngineTypes;
 use tracing::{info, warn};
 
-use allegro_consensus::application::BlockInfoMap;
+use allegro_consensus::application::{with_block_info, BlockInfoMap};
 use allegro_primitives::Digest as AllegroDigest;
 
 use crate::builder::ForkchoiceTracker;
@@ -33,21 +33,12 @@ pub fn spawn_finalizer<Ctx>(
         loop {
             match rx.next().await {
                 Some(digest) => {
-                    let hash = match block_info.read() {
-                        Ok(guard) => guard.get(&digest).map(|info| (info.hash, info.number, info.timestamp)),
-                        Err(e) => {
-                            warn!(error = %e, "block_info lock poisoned in finalizer");
-                            continue;
-                        }
-                    };
-
-                    let (hash, number, _timestamp) = match hash {
-                        Some(h) => h,
-                        None => {
-                            warn!(%digest, "finalized digest not found in block_info");
-                            continue;
-                        }
-                    };
+                    // The digest names the block's execution hash directly;
+                    // the record only supplies the height for the log and
+                    // tracker, so a missing record cannot block finalization.
+                    let hash = digest.block_hash();
+                    let number =
+                        with_block_info(&block_info, &digest, |info| info.number).unwrap_or_default();
 
                     use alloy_rpc_types_engine::ForkchoiceState;
                     let state = ForkchoiceState {
