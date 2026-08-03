@@ -1,19 +1,15 @@
 //! E2E test: transaction broadcast and block inclusion.
 //!
-//! Uses the real [`allegro_consensus::create_reth_payload_builder`] integration
-//! point with closures that build blocks from a shared transaction pool.
-//! This tests the actual production code path through `EngineApiPayloadBuilder`.
+//! Drives the real simplex engine with a [`PayloadBuilder`] that assembles
+//! blocks from a shared transaction pool and records what it built.
 
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use allegro_consensus::{
-    config::ConsensusConfig,
-    create_reth_payload_builder,
-    executor::{BuildPayloadRequest, ValidateBlockRequest},
-    start_simplex_engine, BlockMeta, BuiltPayload, EngineConfig, ValidationResult, ValidatorEntry,
-    ValidatorSet,
+    config::ConsensusConfig, executor::BuildPayloadRequest, start_simplex_engine, BlockMeta,
+    BuiltPayload, EngineConfig, PayloadBuilder, ValidationResult, ValidatorEntry, ValidatorSet,
 };
 use alloy_consensus::{BlockBody, Sealable, Signed, TxEnvelope, TxLegacy};
 use alloy_primitives::{b256, keccak256, Address, Bytes, Signature, B256, U256};
@@ -166,35 +162,45 @@ fn validate_block(block_bytes: &[u8]) -> Result<ValidationResult, String> {
     }))
 }
 
-// ── Recording wrapper (test-only, layers on real EngineApiPayloadBuilder) ──
+// ── Pool-backed recording builder ──────────────────────────
 
 struct RecordingBuilder {
-    inner: allegro_consensus::executor::EngineApiPayloadBuilder,
+    pool: TxPool,
     recorded: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
-impl allegro_consensus::PayloadBuilder for RecordingBuilder {
+impl PayloadBuilder for RecordingBuilder {
     fn build_payload(
         &self,
         req: &BuildPayloadRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<BuiltPayload, String>> + Send>>
     {
-        let rec = self.recorded.clone();
-        let fut = self.inner.build_payload(req);
-        Box::pin(async move {
-            let r = fut.await;
-            if let Ok(ref p) = r {
-                rec.lock().expect("lock").push(p.block_bytes.clone());
-            }
-            r
-        })
+        let txs = self.pool.drain().into_iter().map(tx_envelope).collect();
+        let result = build_block(
+            req.parent_hash,
+            req.parent_number,
+            req.parent_view,
+            req.epoch,
+            req.view,
+            req.proposer,
+            req.timestamp,
+            txs,
+        );
+        if let Ok(ref p) = result {
+            self.recorded
+                .lock()
+                .expect("lock")
+                .push(p.block_bytes.clone());
+        }
+        Box::pin(async move { result })
     }
     fn validate_block(
         &self,
         b: Vec<u8>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ValidationResult, String>> + Send>>
     {
-        self.inner.validate_block(b)
+        let result = validate_block(&b);
+        Box::pin(async move { result })
     }
 }
 
@@ -315,39 +321,8 @@ fn test_tx_inclusion_via_reth_payload_builder() {
             let (b_tx, b_rx) = ctrl.register(3, UQ).await.unwrap();
             let blk = ctrl.clone();
 
-            // Real integration: create_reth_payload_builder with closures
-            let p = pool.clone();
-            let build = move |req: BuildPayloadRequest| {
-                let pool = p.clone();
-                Box::pin(async move {
-                    let txs = pool.drain().into_iter().map(tx_envelope).collect();
-                    build_block(
-                        req.parent_hash,
-                        req.parent_number,
-                        req.parent_view,
-                        req.epoch,
-                        req.view,
-                        req.proposer,
-                        req.timestamp,
-                        txs,
-                    )
-                })
-                    as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = Result<BuiltPayload, String>> + Send>,
-                    >
-            };
-            let validate = move |req: ValidateBlockRequest| {
-                Box::pin(async move { validate_block(&req.block_bytes) })
-                    as std::pin::Pin<
-                        Box<
-                            dyn std::future::Future<Output = Result<ValidationResult, String>>
-                                + Send,
-                        >,
-                    >
-            };
-
             let recording = Arc::new(RecordingBuilder {
-                inner: create_reth_payload_builder(build, validate),
+                pool: pool.clone(),
                 recorded: recorded[i].clone(),
             });
 

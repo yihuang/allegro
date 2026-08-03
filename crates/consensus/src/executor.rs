@@ -5,7 +5,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
@@ -124,123 +123,6 @@ pub struct BuildPayloadRequest {
     /// Millisecond-precision timestamp — the proposer guarantees it is
     /// > the parent's `timestamp_millis`.
     pub timestamp_millis: u64,
-}
-
-/// Validate block request parameters.
-#[derive(Debug, Clone)]
-pub struct ValidateBlockRequest {
-    pub block_bytes: Vec<u8>,
-}
-
-// ── Closure type aliases for EngineApiPayloadBuilder ───────
-
-/// Async closure that builds a payload.
-type BuildPayloadFn = Arc<
-    dyn Fn(
-            BuildPayloadRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// Async closure that validates a block.
-type ValidateBlockFn = Arc<
-    dyn Fn(
-            ValidateBlockRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// A payload builder backed by boxed async closures.
-///
-/// This allows the binary to wire in reth's engine API without the consensus
-/// crate depending on reth directly. The binary creates the closures that
-/// call `fork_choice_updated` / `new_payload` on the engine handle.
-///
-/// # Example (in the binary)
-///
-/// ```ignore
-/// use allegro_consensus::executor::{EngineApiPayloadBuilder, BuildPayloadRequest, ValidateBlockRequest, BuiltPayload, ValidationResult};
-///
-/// let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
-/// let chain_spec = node.chain_spec();
-///
-/// let builder = EngineApiPayloadBuilder::new(
-///     Arc::new(move |req: BuildPayloadRequest| {
-///         let handle = engine_handle.clone();
-///         Box::pin(async move {
-///             // 1. Build payload attributes from request
-///             // 2. Call fork_choice_updated with attributes
-///             // 3. Resolve the built payload
-///             // 4. Return BuiltPayload
-///             todo!()
-///         })
-///     }),
-///     Arc::new(move |req: ValidateBlockRequest| {
-///         let handle = engine_handle.clone();
-///         Box::pin(async move {
-///             // 1. Decode block from req.block_bytes
-///             // 2. Call new_payload on engine handle
-///             // 3. Return Valid / Invalid
-///             todo!()
-///         })
-///     }),
-/// );
-/// ```
-pub struct EngineApiPayloadBuilder {
-    build_fn: BuildPayloadFn,
-    validate_fn: ValidateBlockFn,
-}
-
-impl EngineApiPayloadBuilder {
-    /// Create a new engine API payload builder with the given async closures.
-    pub fn new(build_fn: BuildPayloadFn, validate_fn: ValidateBlockFn) -> Self {
-        Self {
-            build_fn,
-            validate_fn,
-        }
-    }
-}
-
-impl PayloadBuilder for EngineApiPayloadBuilder {
-    fn build_payload(
-        &self,
-        request: &BuildPayloadRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> {
-        (self.build_fn)(request.clone())
-    }
-
-    fn validate_block(
-        &self,
-        block_bytes: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
-        (self.validate_fn)(ValidateBlockRequest { block_bytes })
-    }
-}
-
-// ── Engine API helpers ─────────────────────────────────────
-
-/// Create an [`EngineApiPayloadBuilder`] from async closures.
-pub fn create_reth_payload_builder<BuildFn, ValidateFn>(
-    build_fn: BuildFn,
-    validate_fn: ValidateFn,
-) -> EngineApiPayloadBuilder
-where
-    BuildFn: Fn(
-            BuildPayloadRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
-        + Send
-        + Sync
-        + 'static,
-    ValidateFn: Fn(
-            ValidateBlockRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
-        + Send
-        + Sync
-        + 'static,
-{
-    EngineApiPayloadBuilder::new(Arc::new(build_fn), Arc::new(validate_fn))
 }
 
 /// Build payload attributes for a new block.
