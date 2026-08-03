@@ -226,17 +226,35 @@ async fn test_verify_rejects_wrong_parent() {
         "a block extending a different parent must be rejected"
     );
 
-    // An unknown parent digest cannot be checked at all → vote withheld.
+    // A parent we hold no record of is still checkable: every block takes its
+    // own hash as its digest, so the digest is the hash. Rejected here because
+    // the crafted block extends genesis, not the named parent.
+    let unrecorded = Digest(B256::from([0xbb; 32]));
     assert!(
         !verify_crafted(
             &mailbox,
             &received,
-            leader,
+            leader.clone(),
             crafted(genesis.0, 2),
-            (View::new(1), Digest(B256::from([0xbb; 32]))),
+            (View::new(1), unrecorded),
         )
         .await,
-        "a block with an unknown parent must not collect a vote"
+        "a block extending a different parent must be rejected"
+    );
+
+    // ...and accepted when it does extend it. A node that restarted with an
+    // empty block-info map sees every parent this way; refusing would leave it
+    // unable to ever vote again.
+    assert!(
+        verify_crafted(
+            &mailbox,
+            &received,
+            leader,
+            crafted(unrecorded.0, 3),
+            (View::new(1), unrecorded),
+        )
+        .await,
+        "a block extending an unrecorded parent must still be verifiable"
     );
 }
 

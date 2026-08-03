@@ -542,20 +542,7 @@ impl Inner {
             return;
         }
 
-        // Resolve the consensus parent to its execution-layer hash before
-        // fetching the block: the digest bytes cannot stand in for the hash
-        // (they differ at genesis — EMPTY digest vs chainspec hash). An
-        // unknown parent cannot be checked, so withhold the vote; if the
-        // block is good, the quorum carries it without us.
-        let expected_parent_hash = self.lookup_block_info(&msg.parent.1).map(|info| info.hash);
-        let Some(expected_parent_hash) = expected_parent_hash else {
-            warn!(parent = %msg.parent.1, "no block info for parent; withholding vote");
-            if let Some(ref m) = self.metrics {
-                m.inc_failed_validations();
-            }
-            let _ = msg.response.send(false);
-            return;
-        };
+        let expected_parent_hash = self.parent_hash(&msg.parent.1);
 
         // Look up block bytes (ours or received from peer)
         let block_bytes = match self.pending_blocks.lock() {
@@ -678,6 +665,18 @@ impl Inner {
 
     async fn handle_broadcast(&self, msg: Broadcast) {
         debug!(digest = %msg.digest, "broadcast request from engine");
+    }
+
+    /// The execution-layer hash of the block `digest` names.
+    ///
+    /// Every block we produce takes its own hash as its digest, so the two are
+    /// the same value — except at genesis, whose digest is `EMPTY` while its
+    /// hash comes from the chainspec. The record answers that one case; for
+    /// anything else the digest is the hash, which is what lets a node that
+    /// restarted with an empty map still verify what its peers propose.
+    fn parent_hash(&self, digest: &AllegroDigest) -> B256 {
+        self.lookup_block_info(digest)
+            .map_or(digest.0, |info| info.hash)
     }
 
     /// Read a block's record; a poisoned lock is logged and reads as absent.
