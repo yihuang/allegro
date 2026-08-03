@@ -1,19 +1,15 @@
 //! E2E test: transaction broadcast and block inclusion.
 //!
-//! Uses the real [`allegro_consensus::create_reth_payload_builder`] integration
-//! point with closures that build blocks from a shared transaction pool.
-//! This tests the actual production code path through `EngineApiPayloadBuilder`.
+//! Drives the real simplex engine with a [`PayloadBuilder`] that assembles
+//! blocks from a shared transaction pool and records what it built.
 
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use allegro_consensus::{
-    config::ConsensusConfig,
-    create_reth_payload_builder,
-    executor::{BuildPayloadRequest, ValidateBlockRequest},
-    start_simplex_engine, BlockMeta, BuiltPayload, EngineConfig, ValidationResult, ValidatorEntry,
-    ValidatorSet,
+    config::ConsensusConfig, executor::BuildPayloadRequest, start_simplex_engine, BlockMeta,
+    BuiltPayload, EngineConfig, PayloadBuilder, ValidationResult, ValidatorEntry, ValidatorSet,
 };
 use alloy_consensus::{BlockBody, Sealable, Signed, TxEnvelope, TxLegacy};
 use alloy_primitives::{b256, keccak256, Address, Bytes, Signature, B256, U256};
@@ -85,7 +81,7 @@ fn build_block(
     parent_view: u64,
     epoch: u64,
     view: u64,
-    proposer: [u8; 32],
+    proposer: ProposerKey,
     timestamp: u64,
     txs: Vec<TxEnvelope>,
 ) -> Result<BuiltPayload, String> {
@@ -122,7 +118,7 @@ fn build_block(
             epoch,
             view,
             parent_view,
-            proposer: ProposerKey(proposer),
+            proposer,
         }),
     };
     let block_hash = header.hash_slow();
@@ -138,6 +134,7 @@ fn build_block(
         block_bytes: alloy_rlp::encode(&block),
         block_hash,
         block_number: parent_number + 1,
+        timestamp: block.header.inner.timestamp,
         timestamp_millis: block.header.timestamp_millis,
     })
 }
@@ -158,42 +155,52 @@ fn validate_block(block_bytes: &[u8]) -> Result<ValidationResult, String> {
     let hash = block.header.hash_slow();
     Ok(ValidationResult::Valid(BlockMeta {
         hash,
+        parent_hash: block.header.inner.parent_hash,
         number: block.header.inner.number,
         timestamp: block.header.inner.timestamp,
         timestamp_millis: block.header.timestamp_millis,
     }))
 }
 
-// ── Recording wrapper (test-only, layers on real EngineApiPayloadBuilder) ──
+// ── Pool-backed recording builder ──────────────────────────
 
 struct RecordingBuilder {
-    inner: allegro_consensus::executor::EngineApiPayloadBuilder,
+    pool: TxPool,
     recorded: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
-impl allegro_consensus::PayloadBuilder for RecordingBuilder {
+impl PayloadBuilder for RecordingBuilder {
     fn build_payload(
         &self,
         req: &BuildPayloadRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<BuiltPayload, String>> + Send>>
     {
-        let rec = self.recorded.clone();
-        let fut = self.inner.build_payload(req);
-        Box::pin(async move {
-            let r = fut.await;
-            if let Ok(ref p) = r {
-                rec.lock().expect("lock").push(p.block_bytes.clone());
-            }
-            r
-        })
+        let txs = self.pool.drain().into_iter().map(tx_envelope).collect();
+        let result = build_block(
+            req.parent_hash,
+            req.parent_number,
+            req.parent_view,
+            req.epoch,
+            req.view,
+            req.proposer,
+            req.timestamp,
+            txs,
+        );
+        if let Ok(ref p) = result {
+            self.recorded
+                .lock()
+                .expect("lock")
+                .push(p.block_bytes.clone());
+        }
+        Box::pin(async move { result })
     }
     fn validate_block(
         &self,
         b: Vec<u8>,
-        h: B256,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ValidationResult, String>> + Send>>
     {
-        self.inner.validate_block(b, h)
+        let result = validate_block(&b);
+        Box::pin(async move { result })
     }
 }
 
@@ -314,39 +321,8 @@ fn test_tx_inclusion_via_reth_payload_builder() {
             let (b_tx, b_rx) = ctrl.register(3, UQ).await.unwrap();
             let blk = ctrl.clone();
 
-            // Real integration: create_reth_payload_builder with closures
-            let p = pool.clone();
-            let build = move |req: BuildPayloadRequest| {
-                let pool = p.clone();
-                Box::pin(async move {
-                    let txs = pool.drain().into_iter().map(tx_envelope).collect();
-                    build_block(
-                        req.parent_hash,
-                        req.parent_number,
-                        req.parent_view,
-                        req.epoch,
-                        req.view,
-                        req.proposer,
-                        req.timestamp,
-                        txs,
-                    )
-                })
-                    as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = Result<BuiltPayload, String>> + Send>,
-                    >
-            };
-            let validate = move |req: ValidateBlockRequest| {
-                Box::pin(async move { validate_block(&req.block_bytes) })
-                    as std::pin::Pin<
-                        Box<
-                            dyn std::future::Future<Output = Result<ValidationResult, String>>
-                                + Send,
-                        >,
-                    >
-            };
-
             let recording = Arc::new(RecordingBuilder {
-                inner: create_reth_payload_builder(build, validate),
+                pool: pool.clone(),
                 recorded: recorded[i].clone(),
             });
 
@@ -427,7 +403,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
 
 #[test]
 fn test_empty_block_is_valid() {
-    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, vec![]).expect("build");
+    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, vec![]).expect("build");
     assert!(matches!(
         validate_block(&block.block_bytes),
         Ok(ValidationResult::Valid(_))
@@ -441,7 +417,7 @@ fn test_empty_block_is_valid() {
 #[test]
 fn test_block_with_one_tx_is_valid() {
     let txs = vec![tx_envelope(b"hello".to_vec())];
-    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, txs).expect("build");
+    let block = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, txs).expect("build");
     assert!(matches!(
         validate_block(&block.block_bytes),
         Ok(ValidationResult::Valid(_))
@@ -459,13 +435,14 @@ fn test_block_with_one_tx_is_valid() {
 fn test_blocks_contain_only_drained_txs() {
     // Block A: 1 tx
     let txs_a = vec![tx_envelope(b"only_in_a".to_vec())];
-    let block_a = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, txs_a).expect("build_a");
+    let block_a =
+        build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, txs_a).expect("build_a");
     assert_eq!(decode_txs(&block_a.block_bytes).unwrap().len(), 1);
 
     // Block B: different tx (only_in_a must not appear)
     let txs_b = vec![tx_envelope(b"only_in_b".to_vec())];
     let block_b =
-        build_block(block_a.block_hash, 1, 0, 0, 1, [1u8; 32], 200, txs_b).expect("build_b");
+        build_block(block_a.block_hash, 1, 0, 0, 1, [1u8; 32].into(), 200, txs_b).expect("build_b");
     let decoded_b = decode_txs(&block_b.block_bytes).unwrap();
     assert_eq!(decoded_b.len(), 1);
     assert_eq!(extract_data(&decoded_b[0]), b"only_in_b");
@@ -477,7 +454,8 @@ fn test_blocks_contain_only_drained_txs() {
 
 #[test]
 fn test_truncated_block_fails_validation() {
-    let payload = build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32], 100, vec![]).expect("build");
+    let payload =
+        build_block(B256::ZERO, 0, 0, 0, 0, [0u8; 32].into(), 100, vec![]).expect("build");
     // Truncate to corrupt
     let truncated = payload.block_bytes[..payload.block_bytes.len().saturating_sub(10)].to_vec();
     assert!(validate_block(&truncated).is_err());

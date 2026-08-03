@@ -9,6 +9,11 @@ use rand_core::CryptoRngCore;
 
 /// Wrapper around [`B256`] for use in places requiring
 /// [`commonware_cryptography::Digest`].
+///
+/// A block's digest is its execution-layer block hash: the proposer mints
+/// digests as `Digest(block_hash)`, and genesis is registered under its
+/// chainspec hash. Consumers rely on the identity through
+/// [`block_hash`](Self::block_hash).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
 pub struct Digest(pub B256);
@@ -16,6 +21,11 @@ pub struct Digest(pub B256);
 impl Digest {
     /// Return the inner `B256`.
     pub fn get(self) -> B256 {
+        self.0
+    }
+
+    /// The execution-layer block hash this digest names.
+    pub const fn block_hash(self) -> B256 {
         self.0
     }
 }

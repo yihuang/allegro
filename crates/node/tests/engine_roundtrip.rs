@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use allegro_consensus::{
     executor::{BuildPayloadRequest, ValidationResult},
-    PayloadBuilder,
+    millis_from_secs, PayloadBuilder,
 };
 use allegro_node::{
     builder::{create_engine_payload_builder, ForkchoiceTracker},
@@ -67,11 +67,12 @@ async fn build_validate_finalize_first_block() {
         launched.engine_handle(),
         launched.payload_builder_handle(),
         tracker.clone(),
+        None,
     );
 
     // ── 2. Build block 1 on top of genesis ──
     let timestamp = now_secs().max(launched.genesis_timestamp + 1);
-    let timestamp_millis = timestamp * 1000;
+    let timestamp_millis = millis_from_secs(timestamp);
     let built = tokio::time::timeout(
         Duration::from_secs(30),
         builder.build_payload(&BuildPayloadRequest {
@@ -81,7 +82,7 @@ async fn build_validate_finalize_first_block() {
             parent_digest: AllegroDigest::EMPTY,
             epoch: 0,
             view: 1,
-            proposer: [0u8; 32],
+            proposer: [0u8; 32].into(),
             timestamp,
             timestamp_millis,
         }),
@@ -99,7 +100,7 @@ async fn build_validate_finalize_first_block() {
     // ── 3. Validate block 1 (as a peer would) ──
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        builder.validate_block(built.block_bytes.clone(), launched.genesis_hash),
+        builder.validate_block(built.block_bytes.clone()),
     )
     .await
     .expect("validate_block timed out")
@@ -136,7 +137,7 @@ async fn build_validate_finalize_first_block() {
 
     // ── 5. Build block 2 on top of block 1 — proves the head advanced ──
     let timestamp2 = now_secs().max(timestamp + 1);
-    let timestamp2_millis = timestamp2 * 1000;
+    let timestamp2_millis = millis_from_secs(timestamp2);
     let built2 = tokio::time::timeout(
         Duration::from_secs(30),
         builder.build_payload(&BuildPayloadRequest {
@@ -146,7 +147,7 @@ async fn build_validate_finalize_first_block() {
             parent_digest: AllegroDigest(built.block_hash),
             epoch: 0,
             view: 2,
-            proposer: [0u8; 32],
+            proposer: [0u8; 32].into(),
             timestamp: timestamp2,
             timestamp_millis: timestamp2_millis,
         }),
@@ -159,4 +160,49 @@ async fn build_validate_finalize_first_block() {
         built2.block_number, built2.block_hash
     );
     assert_eq!(built2.block_number, 2);
+
+    // ── 6. Prepare block 3 ahead of the proposal, then propose it ──
+    let prepared_ts = now_secs().max(timestamp2 + 1);
+    let prepare_request = BuildPayloadRequest {
+        parent_hash: built2.block_hash,
+        parent_number: 2,
+        parent_view: 2,
+        parent_digest: AllegroDigest(built2.block_hash),
+        epoch: 0,
+        view: 3,
+        proposer: [0u8; 32].into(),
+        timestamp: prepared_ts,
+        timestamp_millis: millis_from_secs(prepared_ts),
+    };
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        builder.prepare_payload(&prepare_request),
+    )
+    .await
+    .expect("prepare_payload timed out");
+
+    // Ask for a far later timestamp than the prepared job froze. Reusing the
+    // job means the block carries the prepared timestamp, so the two cannot be
+    // confused for one another.
+    let built3 = tokio::time::timeout(
+        Duration::from_secs(30),
+        builder.build_payload(&BuildPayloadRequest {
+            timestamp: prepared_ts + 100,
+            timestamp_millis: millis_from_secs(prepared_ts + 100),
+            ..prepare_request
+        }),
+    )
+    .await
+    .expect("build_payload #3 timed out")
+    .expect("build_payload #3 failed");
+    eprintln!(
+        "built block 3: {} ({}) ts = {}",
+        built3.block_number, built3.block_hash, built3.timestamp
+    );
+    assert_eq!(built3.block_number, 3);
+    assert_eq!(
+        built3.timestamp, prepared_ts,
+        "proposal rebuilt from cold instead of reusing the prepared job"
+    );
+    assert_eq!(built3.timestamp_millis, millis_from_secs(prepared_ts));
 }

@@ -5,14 +5,27 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
+use alloy_rpc_types_engine::PayloadAttributes;
 
-use allegro_primitives::Digest as AllegroDigest;
+use allegro_primitives::{Digest as AllegroDigest, ProposerKey};
 
 // ── Types ───────────────────────────────────────────────────
+
+/// The millisecond timestamp consensus records for a block carrying `secs`.
+///
+/// Proposer and verifiers must derive the same value from the same block, so
+/// there is one definition.
+pub const fn millis_from_secs(secs: u64) -> u64 {
+    secs.saturating_mul(1000)
+}
+
+/// The seconds field a block carries for a given millisecond timestamp — the
+/// inverse rounding of [`millis_from_secs`], shared for the same reason.
+pub const fn secs_from_millis(millis: u64) -> u64 {
+    millis / 1000
+}
 
 /// A block built by the payload builder.
 #[derive(Debug, Clone)]
@@ -23,6 +36,9 @@ pub struct BuiltPayload {
     pub block_hash: B256,
     /// Block number.
     pub block_number: u64,
+    /// Seconds timestamp the block actually carries, which a prepared payload
+    /// froze when its job started — so not necessarily the requested one.
+    pub timestamp: u64,
     /// Millisecond timestamp recorded in consensus bookkeeping. Deterministic:
     /// every node derives the same value for the same block.
     pub timestamp_millis: u64,
@@ -33,6 +49,10 @@ pub struct BuiltPayload {
 pub struct BlockMeta {
     /// Block hash (keccak256 of RLP-encoded header).
     pub hash: B256,
+    /// Parent hash the block's header names. Consensus compares it against
+    /// the parent it chose — reported rather than checked here, so no
+    /// implementation can forget a check it never owned.
+    pub parent_hash: B256,
     /// Block number.
     pub number: u64,
     /// Block timestamp (seconds since UNIX epoch).
@@ -69,12 +89,27 @@ pub trait PayloadBuilder: Send + Sync {
     /// Validate a block.
     ///
     /// Called when this node receives a proposed block from another validator.
-    /// Should execute the block and verify the state root.
+    /// Should execute the block and verify the state root. Consensus-level
+    /// invariants — the parent linkage, the millisecond timestamp — are
+    /// checked by the caller against the reported [`BlockMeta`].
     fn validate_block(
         &self,
         block_bytes: Vec<u8>,
-        parent_hash: B256,
     ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>;
+
+    /// Start building a payload before consensus asks for it, on the block
+    /// this node is predicted to build on next.
+    ///
+    /// A later [`build_payload`](Self::build_payload) for the same parent may
+    /// reuse the work; one for a different parent must not. Best-effort: the
+    /// default does nothing, and failing only costs the head start.
+    fn prepare_payload(
+        &self,
+        request: &BuildPayloadRequest,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let _ = request;
+        Box::pin(async {})
+    }
 }
 
 // ── EngineApiPayloadBuilder ────────────────────────────────
@@ -88,148 +123,12 @@ pub struct BuildPayloadRequest {
     pub parent_digest: AllegroDigest,
     pub epoch: u64,
     pub view: u64,
-    pub proposer: [u8; 32],
+    pub proposer: ProposerKey,
     /// Block timestamp (seconds since UNIX epoch) — Ethereum standard field.
     pub timestamp: u64,
     /// Millisecond-precision timestamp — the proposer guarantees it is
     /// > the parent's `timestamp_millis`.
     pub timestamp_millis: u64,
-}
-
-/// Validate block request parameters.
-#[derive(Debug, Clone)]
-pub struct ValidateBlockRequest {
-    pub block_bytes: Vec<u8>,
-    pub parent_hash: B256,
-}
-
-// ── Closure type aliases for EngineApiPayloadBuilder ───────
-
-/// Async closure that builds a payload.
-type BuildPayloadFn = Arc<
-    dyn Fn(
-            BuildPayloadRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// Async closure that validates a block.
-type ValidateBlockFn = Arc<
-    dyn Fn(
-            ValidateBlockRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// A payload builder backed by boxed async closures.
-///
-/// This allows the binary to wire in reth's engine API without the consensus
-/// crate depending on reth directly. The binary creates the closures that
-/// call `fork_choice_updated` / `new_payload` on the engine handle.
-///
-/// # Example (in the binary)
-///
-/// ```ignore
-/// use allegro_consensus::executor::{EngineApiPayloadBuilder, BuildPayloadRequest, ValidateBlockRequest, BuiltPayload, ValidationResult};
-///
-/// let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
-/// let chain_spec = node.chain_spec();
-///
-/// let builder = EngineApiPayloadBuilder::new(
-///     Arc::new(move |req: BuildPayloadRequest| {
-///         let handle = engine_handle.clone();
-///         Box::pin(async move {
-///             // 1. Build payload attributes from request
-///             // 2. Call fork_choice_updated with attributes
-///             // 3. Resolve the built payload
-///             // 4. Return BuiltPayload
-///             todo!()
-///         })
-///     }),
-///     Arc::new(move |req: ValidateBlockRequest| {
-///         let handle = engine_handle.clone();
-///         Box::pin(async move {
-///             // 1. Decode block from req.block_bytes
-///             // 2. Call new_payload on engine handle
-///             // 3. Return Valid / Invalid
-///             todo!()
-///         })
-///     }),
-/// );
-/// ```
-pub struct EngineApiPayloadBuilder {
-    build_fn: BuildPayloadFn,
-    validate_fn: ValidateBlockFn,
-}
-
-impl EngineApiPayloadBuilder {
-    /// Create a new engine API payload builder with the given async closures.
-    pub fn new(build_fn: BuildPayloadFn, validate_fn: ValidateBlockFn) -> Self {
-        Self {
-            build_fn,
-            validate_fn,
-        }
-    }
-}
-
-impl PayloadBuilder for EngineApiPayloadBuilder {
-    fn build_payload(
-        &self,
-        request: &BuildPayloadRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>> {
-        (self.build_fn)(request.clone())
-    }
-
-    fn validate_block(
-        &self,
-        block_bytes: Vec<u8>,
-        parent_hash: B256,
-    ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>> {
-        let req = ValidateBlockRequest {
-            block_bytes,
-            parent_hash,
-        };
-        (self.validate_fn)(req)
-    }
-}
-
-// ── Engine API helpers ─────────────────────────────────────
-
-/// Create an [`EngineApiPayloadBuilder`] from async closures.
-pub fn create_reth_payload_builder<BuildFn, ValidateFn>(
-    build_fn: BuildFn,
-    validate_fn: ValidateFn,
-) -> EngineApiPayloadBuilder
-where
-    BuildFn: Fn(
-            BuildPayloadRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<BuiltPayload, String>> + Send>>
-        + Send
-        + Sync
-        + 'static,
-    ValidateFn: Fn(
-            ValidateBlockRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<ValidationResult, String>> + Send>>
-        + Send
-        + Sync
-        + 'static,
-{
-    EngineApiPayloadBuilder::new(Arc::new(build_fn), Arc::new(validate_fn))
-}
-
-/// Build forkchoice state and payload attributes from a consensus request.
-pub fn build_payload_attributes_from_request(
-    req: &BuildPayloadRequest,
-) -> (ForkchoiceState, PayloadAttributes) {
-    let forkchoice_state = ForkchoiceState {
-        head_block_hash: req.parent_hash,
-        safe_block_hash: req.parent_hash,
-        finalized_block_hash: req.parent_hash,
-    };
-    let pay_attrs = build_payload_attributes(req.parent_hash, req.timestamp);
-    (forkchoice_state, pay_attrs)
 }
 
 /// Build payload attributes for a new block.
@@ -238,7 +137,7 @@ pub fn build_payload_attributes_from_request(
 /// - `withdrawals: Some(vec![])` for Shanghai+
 /// - `parent_beacon_block_root: Some(ZERO)` for Cancun+
 /// - `slot_number: None` / `target_gas_limit: None` since Amsterdam not activated.
-pub fn build_payload_attributes(_parent_hash: B256, timestamp: u64) -> PayloadAttributes {
+pub fn build_payload_attributes(timestamp: u64) -> PayloadAttributes {
     PayloadAttributes {
         timestamp,
         prev_randao: B256::ZERO,
@@ -256,7 +155,7 @@ mod executor_tests {
 
     #[test]
     fn attrs_are_valid_for_cancun() {
-        let attrs = build_payload_attributes(B256::ZERO, 1_000_000);
+        let attrs = build_payload_attributes(1_000_000);
         assert!(attrs.withdrawals.is_some());
         assert!(attrs.withdrawals.unwrap().is_empty());
         assert!(attrs.parent_beacon_block_root.is_some());
