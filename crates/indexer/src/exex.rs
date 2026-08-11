@@ -34,7 +34,7 @@ fn rows_of(chain: &Chain<EthPrimitives>) -> Vec<IndexedTx> {
         // never re-derives a signature.
         for (tx_index, (sender, tx)) in block.transactions_with_sender().enumerate() {
             rows.push(IndexedTx {
-                position: Position::new(block_num, tx_index as u64),
+                position: Position::new(block_num, tx_index as u32),
                 hash: *tx.tx_hash(),
                 from: *sender,
                 to: tx.to(),
@@ -212,6 +212,13 @@ mod tests {
         store.apply(plan.revert_from, &plan.rows, plan.tip).unwrap();
     }
 
+    /// A throwaway on-disk store; RocksDB has no in-memory mode.
+    fn temp_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("indexer")).unwrap();
+        (dir, store)
+    }
+
     #[test]
     fn commit_indexes_every_transaction() {
         let notification = ExExNotification::ChainCommitted {
@@ -295,7 +302,7 @@ mod tests {
         // The restart contract end to end: whatever the store holds after a revert has to
         // be a block reth can still find, because that value is handed straight back as
         // the resume head. Before the tip carried a hash there was nothing to check here.
-        let mut store = Store::in_memory().unwrap();
+        let (_dir, mut store) = temp_store();
 
         apply(
             &mut store,
@@ -319,7 +326,7 @@ mod tests {
 
     #[test]
     fn a_reorg_applied_to_the_store_leaves_no_orphans() {
-        let mut store = Store::in_memory().unwrap();
+        let (_dir, mut store) = temp_store();
 
         apply(
             &mut store,

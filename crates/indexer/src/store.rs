@@ -1,15 +1,21 @@
-//! The transaction index: a SQLite table mapping senders/recipients to chain positions.
+//! The transaction index: RocksDB keyspaces mapping chain positions and filter keys.
 //!
-//! Rows hold positions and filter keys, never transaction bodies -- reth already stores
-//! those. `(block_num, tx_index)` is both primary key and sort key, because chain
-//! position is the only total order transactions have; that is what makes a cursor
-//! stable, since a page boundary cannot drift as new blocks arrive.
+//! The layout is the one settled in review: a primary keyspace `block‖idx → row` and
+//! one secondary keyspace per filterable column — `from`, `to`, `type` — each keyed
+//! `value‖block‖idx → ()`. Chain position is the suffix everywhere because it is the
+//! only total order transactions have: it keeps cursors stable (a page boundary cannot
+//! drift as new blocks arrive) and makes every secondary range iterate in chain order
+//! for free. Rows hold positions and filter keys, never transaction bodies — reth
+//! already stores those.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use alloy_primitives::{Address, TxHash, B256};
-use rusqlite::types::Value;
-use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
+use rocksdb::{
+    ColumnFamily, ColumnFamilyDescriptor, DBIteratorWithThreadMode, Direction, IteratorMode,
+    Options, WriteBatch, DB,
+};
 
 /// Ordering direction for a query, mirroring the RPC's `sort.order`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -20,14 +26,17 @@ pub enum Order {
 }
 
 /// A transaction's position in the chain. Doubles as the pagination cursor.
+///
+/// `tx_index` is `u32` because that is what the key format stores; making the type
+/// match removes a fallible conversion from every key builder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Position {
     pub block_num: u64,
-    pub tx_index: u64,
+    pub tx_index: u32,
 }
 
 impl Position {
-    pub const fn new(block_num: u64, tx_index: u64) -> Self {
+    pub const fn new(block_num: u64, tx_index: u32) -> Self {
         Self {
             block_num,
             tx_index,
@@ -87,182 +96,198 @@ impl Tip {
     }
 }
 
-/// Reinterpret a blob column as a fixed-width array.
-///
-/// An error, never a panic: `B256::from_slice` would panic on a wrong-length blob, and
-/// that panic unwinds through rusqlite's callback into C. The schema should make this
-/// impossible, so it only fires on corruption or a hand-edited file -- exactly when the
-/// node should report rather than abort.
-fn fixed<const N: usize>(raw: Vec<u8>, column: usize) -> rusqlite::Result<[u8; N]> {
-    let found = raw.len();
-    raw.try_into().map_err(|_| {
-        rusqlite::Error::FromSqlConversionFailure(
-            column,
-            rusqlite::types::Type::Blob,
-            format!("expected {N} bytes, found {found}").into(),
-        )
+const CF_PRIMARY: &str = "primary";
+const CF_FROM: &str = "from";
+const CF_TO: &str = "to";
+const CF_TYPE: &str = "type";
+const CFS: [&str; 4] = [CF_PRIMARY, CF_FROM, CF_TO, CF_TYPE];
+/// The resume point: one key in the default keyspace, replaced on every applied tip.
+const TIP_KEY: &[u8] = b"tip";
+
+/// `block u64 BE ‖ idx u32 BE` — the primary key and every secondary's suffix.
+fn pos_key(pos: Position) -> [u8; 12] {
+    let mut k = [0u8; 12];
+    k[..8].copy_from_slice(&pos.block_num.to_be_bytes());
+    k[8..].copy_from_slice(&pos.tx_index.to_be_bytes());
+    k
+}
+
+/// Decode a position from a key's last 12 bytes. An error, never a slice panic: a
+/// wrong-length key only occurs through corruption or a hand-edited file — exactly
+/// when the node should report rather than abort.
+fn pos_from_key(suffix: &[u8]) -> eyre::Result<Position> {
+    if suffix.len() != 12 {
+        eyre::bail!("position key: expected 12 bytes, found {}", suffix.len());
+    }
+    Ok(Position::new(
+        u64::from_be_bytes(suffix[..8].try_into().unwrap()),
+        u32::from_be_bytes(suffix[8..].try_into().unwrap()),
+    ))
+}
+
+fn sec_key(prefix: &[u8], pos: Position) -> Vec<u8> {
+    let mut k = Vec::with_capacity(prefix.len() + 12);
+    k.extend_from_slice(prefix);
+    k.extend_from_slice(&pos_key(pos));
+    k
+}
+
+/// `hash ‖ from ‖ type ‖ has_to ‖ [to]` — 54 or 74 bytes.
+fn encode_row(row: &IndexedTx) -> Vec<u8> {
+    let mut v = Vec::with_capacity(74);
+    v.extend_from_slice(row.hash.as_slice());
+    v.extend_from_slice(row.from.as_slice());
+    v.push(row.tx_type);
+    match &row.to {
+        Some(to) => {
+            v.push(1);
+            v.extend_from_slice(to.as_slice());
+        }
+        None => v.push(0),
+    }
+    v
+}
+
+fn decode_row(position: Position, val: &[u8]) -> eyre::Result<IndexedTx> {
+    let to = match (val.len(), val.get(53)) {
+        (54, Some(0)) => None,
+        (74, Some(1)) => Some(Address::from_slice(&val[54..74])),
+        (n, flag) => eyre::bail!("row value: unexpected length {n} / to-flag {flag:?}"),
+    };
+    Ok(IndexedTx {
+        position,
+        hash: B256::from_slice(&val[..32]),
+        from: Address::from_slice(&val[32..52]),
+        to,
+        tx_type: val[52],
     })
 }
 
-/// Read a column SQLite stores as `i64` back as the `u64` it was written from.
-fn unsigned(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
-    let raw: i64 = row.get(column)?;
-    u64::try_from(raw).map_err(|_| {
-        rusqlite::Error::FromSqlConversionFailure(
-            column,
-            rusqlite::types::Type::Integer,
-            format!("negative value {raw}").into(),
-        )
-    })
+fn decode_tip(val: &[u8]) -> eyre::Result<Tip> {
+    if val.len() != 40 {
+        eyre::bail!("tip value: expected 40 bytes, found {}", val.len());
+    }
+    Ok(Tip::new(
+        u64::from_be_bytes(val[..8].try_into().unwrap()),
+        B256::from_slice(&val[8..]),
+    ))
 }
 
-/// How many applied notifications between stat refreshes. See [`Store::apply`].
-const OPTIMIZE_EVERY: u64 = 1024;
-
-/// The SQLite-backed index.
+/// The writing half of the index. The ExEx owns it outright, and it does not clone,
+/// so "sole writer" is the type system's problem rather than a convention. Reads for
+/// the RPC go through [`Reader`].
 #[derive(Debug)]
 pub struct Store {
-    conn: Connection,
-    applied: u64,
+    db: Arc<DB>,
+}
+
+/// The read half, shared among concurrently running RPC handlers.
+///
+/// `Clone` and lock-free: RocksDB synchronizes readers internally, so no mutex
+/// serializes queries and a query proceeds while the ExEx writes. It exposes no write
+/// methods — a handler bug cannot write.
+#[derive(Clone, Debug)]
+pub struct Reader {
+    db: Arc<DB>,
 }
 
 impl Store {
-    /// Open (creating if absent) the index at `path`, applying the schema.
+    /// Open (creating if absent) the index at `path`.
     pub fn open(path: impl AsRef<Path>) -> eyre::Result<Self> {
-        let conn = Connection::open(path)?;
-        Self::init(conn)
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        let cfs = CFS.map(|name| {
+            let mut o = Options::default();
+            o.set_compression_type(rocksdb::DBCompressionType::Lz4);
+            ColumnFamilyDescriptor::new(name, o)
+        });
+        let db = DB::open_cf_descriptors(&opts, path, cfs)?;
+        Ok(Self { db: Arc::new(db) })
     }
 
-    /// Open the index at `path` read-only -- the RPC's half of the pair.
+    /// A shareable read handle onto the same database.
+    pub fn reader(&self) -> Reader {
+        Reader {
+            db: self.db.clone(),
+        }
+    }
+
+    /// Apply one notification atomically: drop `revert_from` and above, insert
+    /// `commit`, record the new tip.
     ///
-    /// No schema work: the writer opens first and creates it. Read-only at the OS
-    /// level, so a handler bug cannot write, and on its own connection, so under WAL
-    /// it reads while [`Store::apply`] writes instead of queueing behind it.
-    pub fn open_read_only(path: impl AsRef<Path>) -> eyre::Result<Self> {
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_URI
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        // A reader can still hit SQLITE_BUSY across a checkpoint reset; wait it out.
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn, applied: 0 })
-    }
-
-    /// An in-memory index, for tests.
-    pub fn in_memory() -> eyre::Result<Self> {
-        Self::init(Connection::open_in_memory()?)
-    }
-
-    fn init(conn: Connection) -> eyre::Result<Self> {
-        // WAL keeps RPC reads from blocking the ExEx's writes. `synchronous = NORMAL` is
-        // safe because the index is derived: a crash that loses the last commits is
-        // repaired by backfilling from the recorded tip, not by fsync.
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             -- Bounds what `PRAGMA optimize` will scan, so refreshing stats stays a
-             -- sub-millisecond job on a table of any size.
-             PRAGMA analysis_limit = 400;
-             CREATE TABLE IF NOT EXISTS txs (
-                 block_num INTEGER NOT NULL,
-                 tx_index  INTEGER NOT NULL,
-                 hash      BLOB    NOT NULL,
-                 from_addr BLOB    NOT NULL,
-                 to_addr   BLOB,
-                 tx_type   INTEGER NOT NULL,
-                 PRIMARY KEY (block_num, tx_index)
-             );
-             CREATE INDEX IF NOT EXISTS idx_txs_from ON txs (from_addr, block_num, tx_index);
-             CREATE INDEX IF NOT EXISTS idx_txs_to   ON txs (to_addr,   block_num, tx_index);
-             -- No index on hash: nothing selects by it -- bodies resolve through reth --
-             -- so it only taxed every insert. The DROP cleans files that predate this.
-             DROP INDEX IF EXISTS idx_txs_hash;
-             -- The resume point: exactly one row, replaced on every applied notification.
-             CREATE TABLE IF NOT EXISTS tip (
-                 id        INTEGER PRIMARY KEY CHECK (id = 0),
-                 block_num INTEGER NOT NULL,
-                 hash      BLOB    NOT NULL
-             );",
-        )?;
-        // `apply` reuses three statements and `query` one of a few dozen shapes, so
-        // cache them (default capacity 16 is too small for query's variants).
-        conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn, applied: 0 })
-    }
-
-    /// Apply one notification atomically: drop `revert_from` and above, insert `commit`,
-    /// record the new tip.
+    /// One `WriteBatch` on purpose. A reorg is a revert *and* a commit, and a crash
+    /// between them would leave orphaned entries under a tip claiming they are
+    /// current — a corruption no later notification repairs. Batch order also makes
+    /// the overlap correct: a reorg's replacement rows are put after the range's
+    /// deletes, so the puts win.
     ///
-    /// One SQLite transaction on purpose. A reorg is a revert *and* a commit, and a crash
-    /// between them would leave orphaned rows under a tip claiming they are current --
-    /// a corruption no later notification repairs.
+    /// The revert is the hand-written half a SQL `DELETE` did in one statement: a
+    /// block's secondary entries are not contiguous (their prefix is an address or a
+    /// type), so each is reconstructed from the primary row being dropped. Miss one
+    /// and that keyspace serves ghosts — `revert_scrubs_every_secondary_keyspace`
+    /// below pins all three.
     pub fn apply(
         &mut self,
         revert_from: Option<u64>,
         commit: &[IndexedTx],
         tip: Option<Tip>,
     ) -> eyre::Result<()> {
-        let tx = self.conn.transaction()?;
-        if let Some(from) = revert_from {
-            tx.prepare_cached("DELETE FROM txs WHERE block_num >= ?1")?
-                .execute(params![from])?;
-        }
-        {
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO txs (block_num, tx_index, hash, from_addr, to_addr, tx_type)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?;
-            for entry in commit {
-                insert.execute(params![
-                    entry.position.block_num,
-                    entry.position.tx_index,
-                    entry.hash.as_slice(),
-                    entry.from.as_slice(),
-                    entry.to.as_ref().map(|a| a.as_slice()),
-                    entry.tx_type,
-                ])?;
+        let (p, f, t, ty) = cfs(&self.db);
+        let mut batch = WriteBatch::default();
+
+        if let Some(from_block) = revert_from {
+            let start = pos_key(Position::new(from_block, 0));
+            for item in self
+                .db
+                .iterator_cf(p, IteratorMode::From(&start, Direction::Forward))
+            {
+                let (key, val) = item?;
+                let position = pos_from_key(&key)?;
+                let row = decode_row(position, &val)?;
+                batch.delete_cf(p, &key);
+                batch.delete_cf(f, sec_key(row.from.as_slice(), position));
+                if let Some(to) = &row.to {
+                    batch.delete_cf(t, sec_key(to.as_slice(), position));
+                }
+                batch.delete_cf(ty, sec_key(&[row.tx_type], position));
             }
         }
-        if let Some(tip) = tip {
-            tx.prepare_cached(
-                "INSERT OR REPLACE INTO tip (id, block_num, hash) VALUES (0, ?1, ?2)",
-            )?
-            .execute(params![tip.block_num, tip.hash.as_slice()])?;
-        }
-        tx.commit()?;
 
-        // Refresh the query planner's statistics now and then. Without them SQLite has
-        // no cardinalities to choose between `idx_txs_from` and `idx_txs_to`, takes the
-        // first, and a `from`+`to` query scans the wrong side: measured at 2.9ms against
-        // 33us once analysed, on 200k rows. `analysis_limit` keeps each run cheap.
-        self.applied += 1;
-        if self.applied.is_multiple_of(OPTIMIZE_EVERY) {
-            self.conn.execute_batch("PRAGMA optimize;")?;
+        for row in commit {
+            batch.put_cf(p, pos_key(row.position), encode_row(row));
+            batch.put_cf(f, sec_key(row.from.as_slice(), row.position), []);
+            if let Some(to) = &row.to {
+                batch.put_cf(t, sec_key(to.as_slice(), row.position), []);
+            }
+            batch.put_cf(ty, sec_key(&[row.tx_type], row.position), []);
         }
+
+        if let Some(tip) = tip {
+            let mut v = Vec::with_capacity(40);
+            v.extend_from_slice(&tip.block_num.to_be_bytes());
+            v.extend_from_slice(tip.hash.as_slice());
+            batch.put(TIP_KEY, v);
+        }
+
+        // Default write options — WAL on, no fsync per batch — the same durability
+        // class as the SQLite store's `synchronous = NORMAL`: the index is derived
+        // data, and a crash that loses the last batches is repaired by backfilling
+        // from the recorded tip.
+        self.db.write(batch)?;
         Ok(())
     }
 
     /// The block the index is caught up to, or `None` before the first notification.
     ///
-    /// Always canonical -- a revert records the parent of what it dropped -- so it can go
-    /// straight back to reth as a resume head.
+    /// Always canonical — a revert records the parent of what it dropped — so it can
+    /// go straight back to reth as a resume head.
     pub fn indexed_tip(&self) -> eyre::Result<Option<Tip>> {
-        Ok(self
-            .conn
-            .query_row("SELECT block_num, hash FROM tip WHERE id = 0", [], |row| {
-                Ok(Tip::new(
-                    unsigned(row, 0)?,
-                    B256::from(fixed::<32>(row.get(1)?, 1)?),
-                ))
-            })
-            .optional()?)
+        read_tip(&self.db)
     }
 
-    /// Page through the index. `after` is exclusive and read in `order`'s direction, so
-    /// paging forward never repeats or skips a row. Returns at most `limit` rows.
+    /// Page through the index; semantics in [`Reader::query`].
     pub fn query(
         &self,
         filter: &Filter,
@@ -270,65 +295,231 @@ impl Store {
         order: Order,
         limit: usize,
     ) -> eyre::Result<Vec<IndexedTx>> {
-        let mut sql = String::from(
-            "SELECT block_num, tx_index, hash, from_addr, to_addr, tx_type FROM txs WHERE 1=1",
-        );
-        let mut binds: Vec<Value> = Vec::new();
-
-        if let Some(from) = filter.from {
-            sql.push_str(" AND from_addr = ?");
-            binds.push(from.to_vec().into());
-        }
-        if let Some(to) = filter.to {
-            sql.push_str(" AND to_addr = ?");
-            binds.push(to.to_vec().into());
-        }
-        if let Some(tx_type) = filter.tx_type {
-            sql.push_str(" AND tx_type = ?");
-            binds.push(i64::from(tx_type).into());
-        }
-        if let Some(pos) = after {
-            // The (block, index) pair compared by hand: not every SQLite build we might
-            // link has row-value comparison.
-            let cmp = match order {
-                Order::Ascending => '>',
-                Order::Descending => '<',
-            };
-            sql.push_str(&format!(
-                " AND (block_num {cmp} ? OR (block_num = ? AND tx_index {cmp} ?))"
-            ));
-            binds.push((pos.block_num as i64).into());
-            binds.push((pos.block_num as i64).into());
-            binds.push((pos.tx_index as i64).into());
-        }
-        sql.push_str(match order {
-            Order::Ascending => " ORDER BY block_num ASC, tx_index ASC",
-            Order::Descending => " ORDER BY block_num DESC, tx_index DESC",
-        });
-        sql.push_str(" LIMIT ?");
-        binds.push((limit as i64).into());
-
-        let mut stmt = self.conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params_from_iter(binds), |row| {
-            Ok(IndexedTx {
-                position: Position::new(unsigned(row, 0)?, unsigned(row, 1)?),
-                hash: B256::from(fixed::<32>(row.get(2)?, 2)?),
-                from: Address::from(fixed::<20>(row.get(3)?, 3)?),
-                to: row
-                    .get::<_, Option<Vec<u8>>>(4)?
-                    .map(|raw| fixed::<20>(raw, 4))
-                    .transpose()?
-                    .map(Address::from),
-                tx_type: row.get(5)?,
-            })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        run_query(&self.db, filter, after, order, limit)
     }
+}
+
+impl Reader {
+    /// Page through the index. `after` is exclusive and read in `order`'s direction,
+    /// so paging forward never repeats or skips a row. Returns at most `limit` rows.
+    pub fn query(
+        &self,
+        filter: &Filter,
+        after: Option<Position>,
+        order: Order,
+        limit: usize,
+    ) -> eyre::Result<Vec<IndexedTx>> {
+        run_query(&self.db, filter, after, order, limit)
+    }
+}
+
+type Cfs<'a> = (
+    &'a ColumnFamily,
+    &'a ColumnFamily,
+    &'a ColumnFamily,
+    &'a ColumnFamily,
+);
+
+fn cfs(db: &DB) -> Cfs<'_> {
+    (
+        db.cf_handle(CF_PRIMARY).expect("cf created at open"),
+        db.cf_handle(CF_FROM).expect("cf created at open"),
+        db.cf_handle(CF_TO).expect("cf created at open"),
+        db.cf_handle(CF_TYPE).expect("cf created at open"),
+    )
+}
+
+fn read_tip(db: &DB) -> eyre::Result<Option<Tip>> {
+    db.get(TIP_KEY)?.map(|v| decode_tip(&v)).transpose()
+}
+
+/// How many entries a merge steps toward the other side before seeking straight to
+/// it. Stepping is ~10× cheaper than a seek, so small gaps stay cheap; past this the
+/// gap is large enough that a seek wins outright.
+const GALLOP_AFTER: usize = 16;
+
+/// A directional walk over one keyspace's `prefix‖block‖idx` range, yielding each
+/// entry's position and value — the value matters on the primary keyspace, where it
+/// is the row itself and saves a point lookup per hit.
+struct KeyScan<'a> {
+    db: &'a DB,
+    cf: &'a ColumnFamily,
+    it: DBIteratorWithThreadMode<'a, DB>,
+    prefix: Vec<u8>,
+    order: Order,
+    /// The exact cursor key, skipped so the cursor is exclusive.
+    skip: Option<Vec<u8>>,
+}
+
+impl KeyScan<'_> {
+    fn next_entry(&mut self) -> eyre::Result<Option<(Position, Box<[u8]>)>> {
+        for item in self.it.by_ref() {
+            let (key, val) = item?;
+            if !key.starts_with(&self.prefix) {
+                break;
+            }
+            if self.skip.as_deref() == Some(&*key) {
+                continue;
+            }
+            return Ok(Some((pos_from_key(&key[self.prefix.len()..])?, val)));
+        }
+        Ok(None)
+    }
+
+    fn next_pos(&mut self) -> eyre::Result<Option<Position>> {
+        Ok(self.next_entry()?.map(|(pos, _)| pos))
+    }
+
+    /// True while `pos` has not yet reached `target` walking in `order`'s direction.
+    fn still_ahead(&self, pos: Position, target: Position) -> bool {
+        match self.order {
+            Order::Descending => pos > target,
+            Order::Ascending => pos < target,
+        }
+    }
+
+    /// The first head at or past `target`: step up to [`GALLOP_AFTER`] entries, then
+    /// give up walking and seek the iterator straight to the target key. This is what
+    /// keeps an intersection O(smaller side) instead of O(larger side) — the measured
+    /// difference between a 40-entry sender scanned against a 2000-entry recipient.
+    fn advance_to(&mut self, target: Position) -> eyre::Result<Option<Position>> {
+        for _ in 0..GALLOP_AFTER {
+            match self.next_pos()? {
+                None => return Ok(None),
+                Some(pos) if self.still_ahead(pos, target) => continue,
+                Some(pos) => return Ok(Some(pos)),
+            }
+        }
+        let key = sec_key(&self.prefix, target);
+        let direction = match self.order {
+            Order::Ascending => Direction::Forward,
+            Order::Descending => Direction::Reverse,
+        };
+        self.it = self
+            .db
+            .iterator_cf(self.cf, IteratorMode::From(&key, direction));
+        self.next_pos()
+    }
+}
+
+fn scan<'a>(
+    db: &'a DB,
+    cf: &str,
+    prefix: &[u8],
+    after: Option<Position>,
+    order: Order,
+) -> eyre::Result<KeyScan<'a>> {
+    let handle = db.cf_handle(cf).expect("cf created at open");
+    let (start, skip) = match after {
+        Some(pos) => {
+            let key = sec_key(prefix, pos);
+            (key.clone(), Some(key))
+        }
+        None => match order {
+            // Highest possible suffix, so the reverse walk starts inside the prefix.
+            Order::Descending => {
+                let mut k = prefix.to_vec();
+                k.extend_from_slice(&[0xFF; 12]);
+                (k, None)
+            }
+            Order::Ascending => (prefix.to_vec(), None),
+        },
+    };
+    let direction = match order {
+        Order::Ascending => Direction::Forward,
+        Order::Descending => Direction::Reverse,
+    };
+    Ok(KeyScan {
+        db,
+        cf: handle,
+        it: db.iterator_cf(handle, IteratorMode::From(&start, direction)),
+        prefix: prefix.to_vec(),
+        order,
+        skip,
+    })
+}
+
+/// Intersect 1..=3 keyspace walks by sorted merge — every secondary shares the
+/// `block‖idx` suffix ordering, which is what makes `AND` a merge at all.
+fn merge(mut scans: Vec<KeyScan<'_>>, order: Order, limit: usize) -> eyre::Result<Vec<Position>> {
+    let mut heads = Vec::with_capacity(scans.len());
+    for s in &mut scans {
+        heads.push(s.next_pos()?);
+    }
+    let mut out = Vec::new();
+    while out.len() < limit && heads.iter().all(Option::is_some) {
+        // The head *least* far along is the meeting point: anything ahead of it can
+        // gallop straight down to it, and when every head sits on it, that position
+        // is in the intersection.
+        let iter = heads.iter().flatten();
+        let target = match order {
+            Order::Descending => *iter.min().unwrap(),
+            Order::Ascending => *iter.max().unwrap(),
+        };
+        if heads.iter().all(|h| *h == Some(target)) {
+            out.push(target);
+            for (head, s) in heads.iter_mut().zip(&mut scans) {
+                *head = s.next_pos()?;
+            }
+        } else {
+            for (head, s) in heads.iter_mut().zip(&mut scans) {
+                if *head != Some(target) {
+                    *head = s.advance_to(target)?;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn run_query(
+    db: &DB,
+    filter: &Filter,
+    after: Option<Position>,
+    order: Order,
+    limit: usize,
+) -> eyre::Result<Vec<IndexedTx>> {
+    let mut scans = Vec::new();
+    if let Some(from) = filter.from {
+        scans.push(scan(db, CF_FROM, from.as_slice(), after, order)?);
+    }
+    if let Some(to) = filter.to {
+        scans.push(scan(db, CF_TO, to.as_slice(), after, order)?);
+    }
+    if let Some(ty) = filter.tx_type {
+        scans.push(scan(db, CF_TYPE, &[ty], after, order)?);
+    }
+
+    let primary = db.cf_handle(CF_PRIMARY).expect("cf created at open");
+
+    // No filters: walk the primary directly — its values are the rows.
+    if scans.is_empty() {
+        let mut walk = scan(db, CF_PRIMARY, &[], after, order)?;
+        let mut out = Vec::with_capacity(limit);
+        while out.len() < limit {
+            let Some((pos, val)) = walk.next_entry()? else {
+                break;
+            };
+            out.push(decode_row(pos, &val)?);
+        }
+        return Ok(out);
+    }
+
+    // Filtered: merge the secondary walks, then resolve rows from the primary.
+    let positions = merge(scans, order, limit)?;
+    let keys = positions.iter().map(|&p| (&primary, pos_key(p)));
+    let mut out = Vec::with_capacity(positions.len());
+    for (pos, got) in positions.iter().zip(db.multi_get_cf(keys)) {
+        let val = got?.ok_or_else(|| eyre::eyre!("secondary entry points at a missing row"))?;
+        out.push(decode_row(*pos, &val)?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn addr(byte: u8) -> Address {
         Address::from([byte; 20])
@@ -339,18 +530,24 @@ mod tests {
         Some(Tip::new(block, B256::from([block as u8; 32])))
     }
 
-    fn tx(block: u64, index: u64, from: u8, to: Option<u8>, tx_type: u8) -> IndexedTx {
+    fn tx(block: u64, index: u32, from: u8, to: Option<u8>, tx_type: u8) -> IndexedTx {
         IndexedTx {
             position: Position::new(block, index),
-            hash: B256::from([(block * 10 + index) as u8; 32]),
+            hash: B256::from([(block * 10 + u64::from(index)) as u8; 32]),
             from: addr(from),
             to: to.map(addr),
             tx_type,
         }
     }
 
-    fn seeded() -> Store {
-        let mut store = Store::in_memory().unwrap();
+    fn empty() -> (TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("indexer")).unwrap();
+        (dir, store)
+    }
+
+    fn seeded() -> (TempDir, Store) {
+        let (dir, mut store) = empty();
         let entries = vec![
             tx(1, 0, 0xaa, Some(0xbb), 2),
             tx(1, 1, 0xaa, Some(0xcc), 2),
@@ -358,7 +555,7 @@ mod tests {
             tx(3, 0, 0xaa, None, 2),
         ];
         store.apply(None, &entries, tip(3)).unwrap();
-        store
+        (dir, store)
     }
 
     #[test]
@@ -378,15 +575,13 @@ mod tests {
 
     #[test]
     fn zero_position_round_trips() {
-        // The all-zeros cursor is the genesis-position edge case that a naive
-        // trim_start_matches('0') would turn into an empty string.
         let pos = Position::new(0, 0);
         assert_eq!(Position::decode(&pos.encode()), Some(pos));
     }
 
     #[test]
     fn filters_by_sender() {
-        let store = seeded();
+        let (_dir, store) = seeded();
         let filter = Filter {
             from: Some(addr(0xaa)),
             ..Default::default()
@@ -397,8 +592,20 @@ mod tests {
     }
 
     #[test]
+    fn filters_by_type() {
+        let (_dir, store) = seeded();
+        let filter = Filter {
+            tx_type: Some(0),
+            ..Default::default()
+        };
+        let got = store.query(&filter, None, Order::Ascending, 10).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].position, Position::new(2, 0));
+    }
+
+    #[test]
     fn filters_intersect() {
-        let store = seeded();
+        let (_dir, store) = seeded();
         let filter = Filter {
             from: Some(addr(0xaa)),
             to: Some(addr(0xcc)),
@@ -407,11 +614,21 @@ mod tests {
         let got = store.query(&filter, None, Order::Ascending, 10).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].position, Position::new(1, 1));
+
+        // Three-way, exercising the full merge width.
+        let filter = Filter {
+            from: Some(addr(0xaa)),
+            to: Some(addr(0xbb)),
+            tx_type: Some(2),
+        };
+        let got = store.query(&filter, None, Order::Ascending, 10).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].position, Position::new(1, 0));
     }
 
     #[test]
     fn contract_creation_has_no_recipient() {
-        let store = seeded();
+        let (_dir, store) = seeded();
         let got = store
             .query(&Filter::default(), None, Order::Ascending, 10)
             .unwrap();
@@ -421,7 +638,7 @@ mod tests {
 
     #[test]
     fn descending_is_the_reverse_of_ascending() {
-        let store = seeded();
+        let (_dir, store) = seeded();
         let asc = store
             .query(&Filter::default(), None, Order::Ascending, 10)
             .unwrap();
@@ -434,7 +651,7 @@ mod tests {
 
     #[test]
     fn paging_visits_every_row_exactly_once() {
-        let store = seeded();
+        let (_dir, store) = seeded();
         for order in [Order::Ascending, Order::Descending] {
             let all = store.query(&Filter::default(), None, order, 100).unwrap();
             let mut seen = Vec::new();
@@ -455,8 +672,30 @@ mod tests {
     }
 
     #[test]
+    fn filtered_paging_pages_through_the_merge() {
+        // The cursor has to hold on the merged path too, not only the primary scan.
+        let (_dir, store) = seeded();
+        let filter = Filter {
+            from: Some(addr(0xaa)),
+            ..Default::default()
+        };
+        let all = store.query(&filter, None, Order::Descending, 100).unwrap();
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = store.query(&filter, cursor, Order::Descending, 1).unwrap();
+            let Some(entry) = page.into_iter().next() else {
+                break;
+            };
+            cursor = Some(entry.position);
+            seen.push(entry);
+        }
+        assert_eq!(seen, all);
+    }
+
+    #[test]
     fn revert_drops_the_block_and_everything_above() {
-        let mut store = seeded();
+        let (_dir, mut store) = seeded();
         store.apply(Some(2), &[], tip(1)).unwrap();
         let left = store
             .query(&Filter::default(), None, Order::Ascending, 10)
@@ -467,10 +706,76 @@ mod tests {
     }
 
     #[test]
+    fn revert_scrubs_every_secondary_keyspace() {
+        // The KV-specific hazard a SQL DELETE never had: each secondary entry is
+        // reconstructed from its primary row. A missed one serves ghosts.
+        let (_dir, mut store) = seeded();
+        store.apply(Some(1), &[], tip(0)).unwrap();
+        for filter in [
+            Filter {
+                from: Some(addr(0xaa)),
+                ..Default::default()
+            },
+            Filter {
+                to: Some(addr(0xbb)),
+                ..Default::default()
+            },
+            Filter {
+                tx_type: Some(2),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                store
+                    .query(&filter, None, Order::Ascending, 10)
+                    .unwrap()
+                    .is_empty(),
+                "revert left a ghost behind {filter:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn intersection_gallops_across_a_wide_gap() {
+        // Forces the seek path: the recipient's keyspace holds far more than
+        // GALLOP_AFTER entries between the sender's, so stepping alone never gets
+        // there. Results must match the brute-force answer in both directions.
+        let (_dir, mut store) = empty();
+        let mut rows = Vec::new();
+        // Blocks 1..=2: the rare sender pays the shared recipient.
+        for b in 1..=2u64 {
+            rows.push(tx(b, 0, 0x0a, Some(0xcc), 2));
+        }
+        // Blocks 3..=60: filler traffic to the same recipient from someone else.
+        for b in 3..=60u64 {
+            rows.push(tx(b, 0, 0xbb, Some(0xcc), 2));
+        }
+        store.apply(None, &rows, tip(60)).unwrap();
+
+        let filter = Filter {
+            from: Some(addr(0x0a)),
+            to: Some(addr(0xcc)),
+            ..Default::default()
+        };
+        let want: Vec<Position> = vec![Position::new(1, 0), Position::new(2, 0)];
+        for order in [Order::Ascending, Order::Descending] {
+            let got: Vec<Position> = store
+                .query(&filter, None, order, 100)
+                .unwrap()
+                .iter()
+                .map(|t| t.position)
+                .collect();
+            let mut expect = want.clone();
+            if order == Order::Descending {
+                expect.reverse();
+            }
+            assert_eq!(got, expect, "gallop diverged from brute force ({order:?})");
+        }
+    }
+
+    #[test]
     fn reorg_replaces_rather_than_merges() {
-        // The failure this guards: reverting and committing as two steps can leave the
-        // orphaned block's transactions behind, so a reorged-out tx keeps being served.
-        let mut store = seeded();
+        let (_dir, mut store) = seeded();
         let replacement = vec![tx(2, 0, 0xdd, Some(0xee), 2)];
         store.apply(Some(2), &replacement, tip(3)).unwrap();
 
@@ -503,7 +808,7 @@ mod tests {
 
     #[test]
     fn reapplying_a_block_does_not_duplicate_it() {
-        let mut store = seeded();
+        let (_dir, mut store) = seeded();
         store
             .apply(None, &[tx(1, 0, 0xaa, Some(0xbb), 2)], tip(3))
             .unwrap();
@@ -514,60 +819,14 @@ mod tests {
     }
 
     #[test]
-    fn reader_sees_writes_and_cannot_write() {
-        // The wiring `open_store` sets up: writer first (creates schema and the WAL
-        // sidecars), reader second. Covers the WAL read-only edge case in one place.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("indexer.sqlite");
-        let mut writer = Store::open(&path).unwrap();
-        let mut reader = Store::open_read_only(&path).unwrap();
-
-        writer
-            .apply(None, &[tx(1, 0, 0xaa, Some(0xbb), 2)], tip(1))
-            .unwrap();
-        assert_eq!(reader.indexed_tip().unwrap(), tip(1));
-        let got = reader
-            .query(&Filter::default(), None, Order::Ascending, 10)
-            .unwrap();
-        assert_eq!(got.len(), 1);
-        assert!(
-            reader.apply(None, &[], tip(2)).is_err(),
-            "the read-only connection accepted a write"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_row_errors_rather_than_panicking() {
-        // Only reachable through corruption or a hand-edited file, but the blow-up would
-        // be a panic unwinding out of a rusqlite callback -- i.e. the node, not the query.
-        let store = seeded();
-        store
-            .conn
-            .execute("UPDATE txs SET hash = X'DEAD' WHERE block_num = 1", [])
-            .unwrap();
-        store
-            .conn
-            .execute("UPDATE tip SET block_num = -1 WHERE id = 0", [])
-            .unwrap();
-
-        assert!(store
-            .query(&Filter::default(), None, Order::Ascending, 10)
-            .is_err());
-        assert!(store.indexed_tip().is_err());
-    }
-
-    #[test]
     fn tip_is_absent_before_the_first_notification() {
-        // The resume path reads this to decide between "catch up from here" and "backfill
-        // from genesis", so absent has to mean absent rather than block zero.
-        assert_eq!(Store::in_memory().unwrap().indexed_tip().unwrap(), None);
+        let (_dir, store) = empty();
+        assert_eq!(store.indexed_tip().unwrap(), None);
     }
 
     #[test]
     fn tip_round_trips_with_its_hash() {
-        // The hash is the half that matters on restart: reth resolves the resume head by
-        // hash, so a store that persisted only the height could not produce a usable one.
-        let mut store = Store::in_memory().unwrap();
+        let (_dir, mut store) = empty();
         let want = Tip::new(7, B256::from([0x7c; 32]));
         store.apply(None, &[], Some(want)).unwrap();
         assert_eq!(store.indexed_tip().unwrap(), Some(want));
@@ -575,27 +834,51 @@ mod tests {
 
     #[test]
     fn tip_is_replaced_not_appended() {
-        // One row, enforced by the schema. A second row would make "where am I" ambiguous
-        // and the resume head order-dependent.
-        let mut store = Store::in_memory().unwrap();
+        let (_dir, mut store) = empty();
         store.apply(None, &[], tip(1)).unwrap();
         store.apply(None, &[], tip(2)).unwrap();
         assert_eq!(store.indexed_tip().unwrap(), tip(2));
-        let rows: i64 = store
-            .conn
-            .query_row("SELECT COUNT(*) FROM tip", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(rows, 1);
     }
 
     #[test]
     fn a_revert_moves_the_tip_back() {
-        // Applying a revert must leave the tip naming a block that still exists. Left at
-        // 3, a restart would hand reth a head hash it cannot find and the ExEx would fail
-        // rather than catch up.
-        let mut store = seeded();
+        let (_dir, mut store) = seeded();
         assert_eq!(store.indexed_tip().unwrap(), tip(3));
         store.apply(Some(2), &[], tip(1)).unwrap();
         assert_eq!(store.indexed_tip().unwrap(), tip(1));
+    }
+
+    #[test]
+    fn reader_sees_the_writers_commits() {
+        // "Cannot write" needs no runtime test any more: `Reader` has no write
+        // methods, so what used to be an OS read-only flag is now a compile error.
+        let (_dir, mut store) = empty();
+        let reader = store.reader();
+        store
+            .apply(None, &[tx(1, 0, 0xaa, Some(0xbb), 2)], tip(1))
+            .unwrap();
+        let got = reader
+            .query(&Filter::default(), None, Order::Ascending, 10)
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(read_tip(&reader.db).unwrap(), tip(1));
+    }
+
+    #[test]
+    fn a_corrupt_row_errors_rather_than_panicking() {
+        // Only reachable through corruption or a hand-edited file, but the blow-up
+        // would otherwise be a slice panic inside the node.
+        let (_dir, store) = seeded();
+        let p = store.db.cf_handle(CF_PRIMARY).unwrap();
+        store
+            .db
+            .put_cf(p, pos_key(Position::new(1, 0)), b"short")
+            .unwrap();
+        store.db.put(TIP_KEY, b"also short").unwrap();
+
+        assert!(store
+            .query(&Filter::default(), None, Order::Ascending, 10)
+            .is_err());
+        assert!(store.indexed_tip().is_err());
     }
 }

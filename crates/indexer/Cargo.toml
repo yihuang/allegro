@@ -28,7 +28,7 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 
 # Storage
-rusqlite = { version = "0.37", features = ["bundled"] }
+rocksdb = "0.24"
 
 # General
 eyre.workspace = true

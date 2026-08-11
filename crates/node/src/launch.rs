@@ -138,10 +138,10 @@ macro_rules! into_launched {
 
 /// Install the transaction-index ExEx and its `eth_getTransactions` handler.
 ///
-/// One index file, two connections: the ExEx owns the writing side outright and the
-/// RPC handlers share the read-only side, so under WAL a query answers mid-backfill
+/// One RocksDB instance, two handles: the ExEx owns the writing side outright and
+/// the RPC handlers share a lock-free read handle, so a query answers mid-backfill
 /// instead of queueing behind the writer. Opened before either hook, so both land on
-/// the same file and the writer has created it by the time the reader opens.
+/// the same database.
 macro_rules! with_indexer {
     ($builder:expr, $store:expr) => {{
         let (exex_store, rpc_store) = $store;

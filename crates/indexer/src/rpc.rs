@@ -12,8 +12,7 @@ use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::{helpers::EthTransactions, EthApiTypes, RpcTransaction};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Filter, Order, Position};
-use crate::SharedStore;
+use crate::store::{Filter, Order, Position, Reader};
 
 /// Page size when the caller does not ask for one.
 const DEFAULT_LIMIT: usize = 10;
@@ -138,11 +137,11 @@ pub trait IndexerApi<T: serde::Serialize + Clone> {
 #[derive(Debug, Clone)]
 pub struct IndexerRpc<EthApi> {
     eth_api: EthApi,
-    store: SharedStore,
+    store: Reader,
 }
 
 impl<EthApi> IndexerRpc<EthApi> {
-    pub const fn new(eth_api: EthApi, store: SharedStore) -> Self {
+    pub const fn new(eth_api: EthApi, store: Reader) -> Self {
         Self { eth_api, store }
     }
 }
@@ -181,7 +180,6 @@ where
         // promise a next page that turns out empty at an exact multiple of the limit.
         let mut found = self
             .store
-            .lock()
             .query(&filter, after, order, limit.saturating_add(1))
             .map_err(|e| internal_rpc_err(format!("index query failed: {e}")))?;
 

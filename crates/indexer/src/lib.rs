@@ -13,31 +13,19 @@ pub mod exex;
 pub mod rpc;
 pub mod store;
 
-use std::sync::Arc;
-
-use parking_lot::Mutex;
-
 pub use rpc::{IndexerApiServer, IndexerRpc};
-pub use store::Store;
+pub use store::{Reader, Store};
 
-/// The read-only connection, shared among concurrently running RPC handlers.
-pub type SharedStore = Arc<Mutex<Store>>;
+/// Directory name of the index inside the node's datadir.
+pub const INDEX_DIR: &str = "indexer";
 
-/// File name of the index inside the node's datadir.
-pub const INDEX_FILE: &str = "indexer.sqlite";
-
-/// Open the index under `datadir` twice: a writing connection the ExEx owns
-/// outright, and a read-only one the RPC handlers share.
-///
-/// Separate connections are what let WAL serve a query mid-backfill; on one shared
-/// connection every read queues behind the writer. The writer opens (and creates)
-/// first, so the read-only open always finds the schema and WAL sidecars in place.
-pub fn open_store(datadir: &std::path::Path) -> eyre::Result<(Store, SharedStore)> {
+/// Open the index under `datadir`: a writing handle the ExEx owns outright, and a
+/// lock-free read handle the RPC handlers share.
+pub fn open_store(datadir: &std::path::Path) -> eyre::Result<(Store, Reader)> {
     // reth creates the datadir before either launch path reaches here; this is one
     // syscall to not depend on that.
     std::fs::create_dir_all(datadir)?;
-    let path = datadir.join(INDEX_FILE);
-    let writer = Store::open(&path)?;
-    let reader = Store::open_read_only(&path)?;
-    Ok((writer, Arc::new(Mutex::new(reader))))
+    let store = Store::open(datadir.join(INDEX_DIR))?;
+    let reader = store.reader();
+    Ok((store, reader))
 }
