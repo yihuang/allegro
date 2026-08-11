@@ -60,6 +60,7 @@ allegro node --dev [reth flags]                   # solo-validator devnet (dev c
 #   --consensus.node-index <N>          # validator index (0-based)
 #   --consensus.listen-address <ADDR>   # consensus p2p address
 #   --consensus.peer <ADDR>             # repeat for every peer (all nodes must list each other)
+#   --consensus.datadir <PATH>          # default: <datadir>/consensus
 #   --consensus.leader-timeout <MS>     # default: 2000
 ```
 

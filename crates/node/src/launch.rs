@@ -64,6 +64,9 @@ impl Default for RethNodeConfig {
 ///
 /// Contains the engine API handles, genesis block info, and an exit future.
 pub struct LaunchedRethNode {
+    /// Resolved reth data directory, so consensus can store its data alongside
+    /// the execution database.
+    pub datadir: PathBuf,
     /// Consensus engine handle for FCU and new_payload calls.
     pub engine_handle: ConsensusEngineHandle<EthEngineTypes>,
     /// Payload builder handle for resolving built payloads.
@@ -114,13 +117,14 @@ macro_rules! allegro_add_ons {
 
 /// Wrap a launched node + exit future into [`LaunchedRethNode`].
 macro_rules! into_launched {
-    ($node:expr, $exit:expr) => {{
+    ($node:expr, $exit:expr, $datadir:expr) => {{
         let node = $node;
         let engine_handle = node.add_ons_handle.beacon_engine_handle.clone();
         let payload_builder_handle = node.payload_builder_handle.clone();
         let genesis_hash = node.chain_spec().genesis_hash();
         let genesis_timestamp = node.chain_spec().genesis_timestamp();
         LaunchedRethNode {
+            datadir: $datadir,
             engine_handle,
             payload_builder_handle,
             genesis_hash,
@@ -138,6 +142,9 @@ macro_rules! into_launched {
 pub async fn launch_with_builder(
     builder: reth_node_builder::WithLaunchContext<NodeBuilder<reth_db::DatabaseEnv, ChainSpec>>,
 ) -> eyre::Result<LaunchedRethNode> {
+    // Read the datadir before the builder is consumed by `with_types`.
+    let datadir = builder.config().datadir().data_dir().to_path_buf();
+
     let NodeHandle {
         node,
         node_exit_future,
@@ -149,7 +156,7 @@ pub async fn launch_with_builder(
         .await
         .wrap_err("failed to launch reth node")?;
 
-    Ok(into_launched!(node, node_exit_future))
+    Ok(into_launched!(node, node_exit_future, datadir))
 }
 
 /// Launch a reth execution node with the given configuration.
@@ -169,6 +176,9 @@ pub async fn launch(
         reth_db::mdbx::DatabaseArguments::default(),
     )
     .wrap_err("failed to open database")?;
+
+    // Captured before `cfg.datadir` moves into the datadir args below.
+    let datadir = cfg.datadir.clone();
 
     let node_config = NodeConfig::new(cfg.chain.clone())
         .with_datadir_args(DatadirArgs {
@@ -209,5 +219,5 @@ pub async fn launch(
         .await
         .wrap_err("failed to launch reth node")?;
 
-    Ok(into_launched!(node, node_exit_future))
+    Ok(into_launched!(node, node_exit_future, datadir))
 }
