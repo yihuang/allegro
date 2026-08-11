@@ -59,6 +59,14 @@ pub struct ConsensusArgs {
     #[arg(long = "consensus.peer", env = "ALLEGRO_PEER")]
     pub peers: Vec<SocketAddr>,
 
+    /// Where to store consensus data. Defaults to `<datadir>/consensus`.
+    #[arg(
+        long = "consensus.datadir",
+        value_name = "PATH",
+        env = "ALLEGRO_CONSENSUS_DATADIR"
+    )]
+    pub storage_dir: Option<PathBuf>,
+
     /// Leader timeout (ms).
     #[arg(
         long = "consensus.leader-timeout",
@@ -216,6 +224,7 @@ fn main() -> eyre::Result<()> {
             consensus,
             validators,
             RethWiring {
+                datadir: launched.datadir.clone(),
                 engine_handle: launched.engine_handle.clone(),
                 payload_handle: launched.payload_builder_handle.clone(),
                 genesis_hash: launched.genesis_hash,
@@ -350,6 +359,7 @@ async fn track_peers(
 
 /// Handles wiring consensus to an embedded reth node.
 struct RethWiring {
+    datadir: PathBuf,
     engine_handle: ConsensusEngineHandle<EthEngineTypes>,
     payload_handle: PayloadBuilderHandle<EthEngineTypes>,
     genesis_hash: B256,
@@ -376,12 +386,23 @@ fn spawn_consensus_thread(
 fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring) {
     let sk = PrivateKey::from_seed(args.node as u64);
     let pk = sk.public_key();
-    info!(node = args.node, listen = %args.listen(), peers = ?args.peers, "starting allegro consensus");
+    let storage_dir = args
+        .storage_dir
+        .clone()
+        .unwrap_or_else(|| reth.datadir.join("consensus"));
+    info!(
+        node = args.node,
+        listen = %args.listen(),
+        peers = ?args.peers,
+        storage = %storage_dir.display(),
+        "starting allegro consensus",
+    );
 
     let consensus_config = build_consensus_config(&args);
     let rt_cfg = commonware_runtime::tokio::Config::default()
         .with_tcp_nodelay(Some(true))
         .with_worker_threads(2)
+        .with_storage_directory(storage_dir)
         .with_catch_panics(true);
     let runner = commonware_runtime::tokio::Runner::new(rt_cfg);
 

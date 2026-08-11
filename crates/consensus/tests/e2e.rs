@@ -333,7 +333,11 @@ fn test_simplex_engine_loopback() {
         ))
         .try_init();
 
-    let runner = commonware_runtime::tokio::Runner::new(commonware_runtime::tokio::Config::new());
+    // The runtime otherwise picks a random $TMPDIR path and never removes it.
+    let storage = tempfile::tempdir().expect("tempdir");
+    let runner = commonware_runtime::tokio::Runner::new(
+        commonware_runtime::tokio::Config::new().with_storage_directory(storage.path()),
+    );
 
     runner.start(|context| async move {
         let sk = PrivateKey::from_seed(0);

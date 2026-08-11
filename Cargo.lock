@@ -110,6 +110,7 @@ dependencies = [
  "governor",
  "parking_lot",
  "rand 0.8.7",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
