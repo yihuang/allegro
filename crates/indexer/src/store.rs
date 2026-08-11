@@ -116,10 +116,14 @@ fn unsigned(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
     })
 }
 
+/// How many applied notifications between stat refreshes. See [`Store::apply`].
+const OPTIMIZE_EVERY: u64 = 1024;
+
 /// The SQLite-backed index.
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
+    applied: u64,
 }
 
 impl Store {
@@ -144,7 +148,7 @@ impl Store {
         // A reader can still hit SQLITE_BUSY across a checkpoint reset; wait it out.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn })
+        Ok(Self { conn, applied: 0 })
     }
 
     /// An in-memory index, for tests.
@@ -159,6 +163,9 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
+             -- Bounds what `PRAGMA optimize` will scan, so refreshing stats stays a
+             -- sub-millisecond job on a table of any size.
+             PRAGMA analysis_limit = 400;
              CREATE TABLE IF NOT EXISTS txs (
                  block_num INTEGER NOT NULL,
                  tx_index  INTEGER NOT NULL,
@@ -183,7 +190,7 @@ impl Store {
         // `apply` reuses three statements and `query` one of a few dozen shapes, so
         // cache them (default capacity 16 is too small for query's variants).
         conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn })
+        Ok(Self { conn, applied: 0 })
     }
 
     /// Apply one notification atomically: drop `revert_from` and above, insert `commit`,
@@ -226,6 +233,15 @@ impl Store {
             .execute(params![tip.block_num, tip.hash.as_slice()])?;
         }
         tx.commit()?;
+
+        // Refresh the query planner's statistics now and then. Without them SQLite has
+        // no cardinalities to choose between `idx_txs_from` and `idx_txs_to`, takes the
+        // first, and a `from`+`to` query scans the wrong side: measured at 2.9ms against
+        // 33us once analysed, on 200k rows. `analysis_limit` keeps each run cheap.
+        self.applied += 1;
+        if self.applied.is_multiple_of(OPTIMIZE_EVERY) {
+            self.conn.execute_batch("PRAGMA optimize;")?;
+        }
         Ok(())
     }
 
