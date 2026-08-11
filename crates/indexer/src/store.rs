@@ -87,6 +87,35 @@ impl Tip {
     }
 }
 
+/// Reinterpret a blob column as a fixed-width array.
+///
+/// An error, never a panic: `B256::from_slice` would panic on a wrong-length blob, and
+/// that panic unwinds through rusqlite's callback into C. The schema should make this
+/// impossible, so it only fires on corruption or a hand-edited file -- exactly when the
+/// node should report rather than abort.
+fn fixed<const N: usize>(raw: Vec<u8>, column: usize) -> rusqlite::Result<[u8; N]> {
+    let found = raw.len();
+    raw.try_into().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Blob,
+            format!("expected {N} bytes, found {found}").into(),
+        )
+    })
+}
+
+/// Read a column SQLite stores as `i64` back as the `u64` it was written from.
+fn unsigned(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
+    let raw: i64 = row.get(column)?;
+    u64::try_from(raw).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            format!("negative value {raw}").into(),
+        )
+    })
+}
+
 /// The SQLite-backed index.
 #[derive(Debug)]
 pub struct Store {
@@ -208,10 +237,9 @@ impl Store {
         Ok(self
             .conn
             .query_row("SELECT block_num, hash FROM tip WHERE id = 0", [], |row| {
-                let hash: Vec<u8> = row.get(1)?;
                 Ok(Tip::new(
-                    row.get::<_, i64>(0)? as u64,
-                    B256::from_slice(&hash),
+                    unsigned(row, 0)?,
+                    B256::from(fixed::<32>(row.get(1)?, 1)?),
                 ))
             })
             .optional()?)
@@ -266,14 +294,15 @@ impl Store {
 
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params_from_iter(binds), |row| {
-            let hash: Vec<u8> = row.get(2)?;
-            let from: Vec<u8> = row.get(3)?;
-            let to: Option<Vec<u8>> = row.get(4)?;
             Ok(IndexedTx {
-                position: Position::new(row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64),
-                hash: B256::from_slice(&hash),
-                from: Address::from_slice(&from),
-                to: to.map(|a| Address::from_slice(&a)),
+                position: Position::new(unsigned(row, 0)?, unsigned(row, 1)?),
+                hash: B256::from(fixed::<32>(row.get(2)?, 2)?),
+                from: Address::from(fixed::<20>(row.get(3)?, 3)?),
+                to: row
+                    .get::<_, Option<Vec<u8>>>(4)?
+                    .map(|raw| fixed::<20>(raw, 4))
+                    .transpose()?
+                    .map(Address::from),
                 tx_type: row.get(5)?,
             })
         })?;
@@ -489,6 +518,26 @@ mod tests {
             reader.apply(None, &[], tip(2)).is_err(),
             "the read-only connection accepted a write"
         );
+    }
+
+    #[test]
+    fn a_corrupt_row_errors_rather_than_panicking() {
+        // Only reachable through corruption or a hand-edited file, but the blow-up would
+        // be a panic unwinding out of a rusqlite callback -- i.e. the node, not the query.
+        let store = seeded();
+        store
+            .conn
+            .execute("UPDATE txs SET hash = X'DEAD' WHERE block_num = 1", [])
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE tip SET block_num = -1 WHERE id = 0", [])
+            .unwrap();
+
+        assert!(store
+            .query(&Filter::default(), None, Order::Ascending, 10)
+            .is_err());
+        assert!(store.indexed_tip().is_err());
     }
 
     #[test]

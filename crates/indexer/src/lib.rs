@@ -33,6 +33,9 @@ pub const INDEX_FILE: &str = "indexer.sqlite";
 /// connection every read queues behind the writer. The writer opens (and creates)
 /// first, so the read-only open always finds the schema and WAL sidecars in place.
 pub fn open_store(datadir: &std::path::Path) -> eyre::Result<(Store, SharedStore)> {
+    // reth creates the datadir before either launch path reaches here; this is one
+    // syscall to not depend on that.
+    std::fs::create_dir_all(datadir)?;
     let path = datadir.join(INDEX_FILE);
     let writer = Store::open(&path)?;
     let reader = Store::open_read_only(&path)?;

@@ -61,7 +61,7 @@ pub struct PaginationParams<Filters> {
     /// Which items to yield.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Filters>,
-    /// Maximum items to return. Defaults to 10, capped at 100.
+    /// Maximum items to return. Defaults to 10; clamped to 1..=100.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
     /// Ordering of the yielded items.
@@ -163,7 +163,10 @@ where
             tx_type: filters.type_,
         };
         let order: Order = params.sort.unwrap_or_default().order.into();
-        let limit = params.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        // Floor of 1, not just a ceiling: a zero limit returns no rows, so it has no
+        // last row to cut a cursor from, and the caller is told the page is final while
+        // `has_more` says otherwise -- a walk that ends one page in.
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
         let after = params
             .cursor
@@ -184,9 +187,7 @@ where
 
         let has_more = found.len() > limit;
         found.truncate(limit);
-        // The cursor names the last row returned, not the extra one peeked at. `filter`
-        // rather than `if has_more` because a zero limit truncates to nothing, leaving
-        // no last row to name.
+        // The cursor names the last row returned, not the extra one peeked at.
         let next_cursor = found
             .last()
             .filter(|_| has_more)
