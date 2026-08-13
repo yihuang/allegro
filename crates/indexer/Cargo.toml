@@ -27,8 +27,8 @@ reth-node-core.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 
-# Storage
-rocksdb = "0.24"
+# The index, shared with tempo
+tx-index.workspace = true
 
 # General
 eyre.workspace = true

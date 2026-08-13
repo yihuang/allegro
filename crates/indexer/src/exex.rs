@@ -343,6 +343,7 @@ mod tests {
         );
 
         let orphaned = store
+            .reader()
             .query(
                 &Filter {
                     from: Some(Address::from([0xaa; 20])),
@@ -361,6 +362,7 @@ mod tests {
         assert_eq!(orphaned[0].position.block_num, 1);
 
         let canonical = store
+            .reader()
             .query(
                 &Filter {
                     from: Some(Address::from([0xdd; 20])),

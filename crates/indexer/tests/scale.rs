@@ -53,6 +53,7 @@ fn scale() {
         let t = Instant::now();
         for _ in 0..REPS {
             rows = store
+                .reader()
                 .query(filter, after, Order::Descending, 100)
                 .unwrap()
                 .len();

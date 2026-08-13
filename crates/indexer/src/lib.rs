@@ -11,10 +11,17 @@
 
 pub mod exex;
 pub mod rpc;
-pub mod store;
+
+/// The index itself, shared with tempo through the `tx-index` crate.
+///
+/// It deals only in addresses, hashes and a type byte — no reth, which is what lets
+/// two nodes on different reth revisions use the same one. What stays here is what
+/// cannot be shared: the ExEx is concrete in this node's primitives, and the RPC
+/// mirrors the schema tempo declares.
+pub use tx_index as store;
 
 pub use rpc::{IndexerApiServer, IndexerRpc};
-pub use store::{Reader, Store};
+pub use tx_index::{Reader, Store};
 
 /// Directory name of the index inside the node's datadir.
 pub const INDEX_DIR: &str = "indexer";

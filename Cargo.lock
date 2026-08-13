@@ -137,11 +137,11 @@ dependencies = [
  "reth-rpc-convert",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
- "rocksdb",
  "serde",
  "serde_json",
  "tempfile",
  "tracing",
+ "tx-index",
 ]
 
 [[package]]
@@ -11799,6 +11799,16 @@ dependencies = [
  "sha1",
  "thiserror 2.0.19",
  "utf-8",
+]
+
+[[package]]
+name = "tx-index"
+version = "0.1.0"
+source = "git+https://github.com/mmsqe/tempo-indexer?rev=a77949e76765a2d08ef279e63682358eba4e43fc#a77949e76765a2d08ef279e63682358eba4e43fc"
+dependencies = [
+ "alloy-primitives",
+ "eyre",
+ "rocksdb",
 ]
 
 [[package]]
