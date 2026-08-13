@@ -79,7 +79,7 @@ impl<S: Sender<PublicKey = PublicKey> + Send + 'static> Relay for BlockRelay<S> 
     // Broadcasting is synchronous now: consensus must not be blocked on block
     // distribution, so a submission that the transport rejects is dropped and
     // counted rather than retried here.
-    fn broadcast(&mut self, digest: Self::Digest, _plan: Self::Plan) -> Feedback {
+    fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) -> Feedback {
         // Look up the block bytes from our pending store
         let block_bytes = {
             let pending = self.pending.lock().expect("pending lock poisoned");
@@ -96,9 +96,15 @@ impl<S: Sender<PublicKey = PublicKey> + Send + 'static> Relay for BlockRelay<S> 
         msg.extend_from_slice(digest.as_ref());
         msg.extend_from_slice(&block_bytes);
 
+        // Initial proposals go to everyone; forwards target the plan's recipients.
+        let recipients = match plan {
+            Plan::Propose { .. } => Recipients::All,
+            Plan::Forward { recipients, .. } => recipients,
+        };
+
         // `check` first so a rate-limited transport is distinguishable from
         // simply having no peers (both leave `Sender::send` with an empty list).
-        let Ok(checked) = self.sender.check(Recipients::All) else {
+        let Ok(checked) = self.sender.check(recipients) else {
             warn!(%digest, "all recipients rate-limited; dropping block broadcast");
             if let Some(ref m) = self.metrics {
                 m.inc_errors();
@@ -371,16 +377,8 @@ pub fn start_simplex_engine<TContext, BS, BR, BL>(
     blocker: BL,
 ) -> Result<StartedEngine, ConsensusError>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + CryptoRng
-        + Metrics
-        + Network
-        + Pacer
-        + Spawner
-        + Storage
-        + 'static,
+    TContext:
+        BufferPooler + Clock + CryptoRng + Metrics + Network + Pacer + Spawner + Storage + 'static,
     BS: Sender<PublicKey = PublicKey> + Clone + Send + 'static,
     BR: Receiver<PublicKey = PublicKey> + Send + 'static,
     BL: commonware_p2p::Blocker<PublicKey = PublicKey> + Clone + Send + 'static,

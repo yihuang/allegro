@@ -28,7 +28,10 @@ use commonware_consensus::{
     types::{Round, View},
     Automaton, CertifiableAutomaton,
 };
-use commonware_cryptography::{ed25519::PublicKey, Signer as _};
+use commonware_cryptography::{
+    ed25519::{PrivateKey, PublicKey},
+    Signer as _,
+};
 use commonware_utils::channel::oneshot;
 use futures::{channel::mpsc, SinkExt, StreamExt};
 use tracing::{debug, error, info, warn};
@@ -235,7 +238,7 @@ impl Actor {
     ) -> (Self, Mailbox) {
         // Register genesis block info
         let genesis_digest = commonware_cryptography::Digest::EMPTY;
-        let genesis_sk = commonware_cryptography::ed25519::PrivateKey::from_seed(0);
+        let genesis_sk = PrivateKey::from_seed(0);
         match block_info.write() {
             Ok(mut guard) => {
                 guard.insert(

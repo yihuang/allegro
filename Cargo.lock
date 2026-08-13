@@ -118,7 +118,6 @@ dependencies = [
  "commonware-runtime",
  "commonware-utils",
  "futures",
- "governor",
  "parking_lot",
  "rand_core 0.10.1",
  "tempfile",
