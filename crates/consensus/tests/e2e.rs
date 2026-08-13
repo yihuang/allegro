@@ -29,7 +29,7 @@ use commonware_consensus::{
     Automaton,
 };
 use commonware_cryptography::{ed25519::PrivateKey, Digest as _, Signer as _};
-use commonware_runtime::{deterministic, Clock, Runner, Supervisor};
+use commonware_runtime::{deterministic, Clock, Runner, Supervisor as _};
 use tokio::sync::oneshot;
 
 // ── Helpers ─────────────────────────────────────────────────

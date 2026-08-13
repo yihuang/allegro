@@ -20,7 +20,7 @@ use alloy_primitives::{b256, keccak256, Address, Bytes, Signature, B256, U256};
 use alloy_rlp::Decodable;
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
-use commonware_runtime::{deterministic, Clock, Runner, Supervisor};
+use commonware_runtime::{deterministic, Clock, Runner, Supervisor as _};
 use tracing::debug;
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, Digest, ProposerKey};

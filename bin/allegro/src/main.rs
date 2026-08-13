@@ -26,7 +26,7 @@ use clap::{Args, Parser};
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::authenticated::lookup;
 use commonware_p2p::AddressableManager;
-use commonware_runtime::{Clock, Runner, Supervisor};
+use commonware_runtime::{Clock, Runner, Supervisor as _};
 use commonware_utils::{ordered::Map, NZUsize};
 use reth_chainspec::ChainSpec;
 use reth_cli::chainspec::ChainSpecParser;

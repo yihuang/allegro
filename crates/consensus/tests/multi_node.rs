@@ -23,7 +23,7 @@ use commonware_cryptography::{
     Signer as _,
 };
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
-use commonware_runtime::{deterministic, Clock, Runner, Supervisor};
+use commonware_runtime::{deterministic, Clock, Runner, Supervisor as _};
 use tracing::debug;
 
 /// Unlimited quota for simulated network (matching commonware's test pattern).
