@@ -97,9 +97,9 @@ impl<S: Sender<PublicKey = PublicKey> + Send + 'static> Relay for BlockRelay<S> 
         msg.extend_from_slice(&block_bytes);
 
         // Initial proposals go to everyone; forwards target the plan's recipients.
-        let recipients = match &plan {
+        let recipients = match plan {
             Plan::Propose { .. } => Recipients::All,
-            Plan::Forward { recipients, .. } => recipients.clone(),
+            Plan::Forward { recipients, .. } => recipients,
         };
 
         // `check` first so a rate-limited transport is distinguishable from
