@@ -118,10 +118,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "allegro-indexer"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "async-trait",
+ "eyre",
+ "futures",
+ "jsonrpsee",
+ "parking_lot",
+ "reth-ethereum",
+ "reth-ethereum-primitives",
+ "reth-execution-types",
+ "reth-node-api",
+ "reth-node-core",
+ "reth-primitives-traits",
+ "reth-rpc-convert",
+ "reth-rpc-eth-api",
+ "reth-rpc-eth-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tx-index",
+]
+
+[[package]]
 name = "allegro-node"
 version = "0.1.0"
 dependencies = [
  "allegro-consensus",
+ "allegro-indexer",
  "allegro-primitives",
  "alloy-consensus",
  "alloy-genesis",
@@ -8002,6 +8030,7 @@ dependencies = [
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",
+ "reth-exex",
  "reth-network",
  "reth-network-api",
  "reth-node-api",
@@ -11770,6 +11799,16 @@ dependencies = [
  "sha1",
  "thiserror 2.0.19",
  "utf-8",
+]
+
+[[package]]
+name = "tx-index"
+version = "0.1.0"
+source = "git+https://github.com/mmsqe/tempo-indexer?rev=56933a250d257afbc8d0b760629d49afae1559fb#56933a250d257afbc8d0b760629d49afae1559fb"
+dependencies = [
+ "alloy-primitives",
+ "eyre",
+ "rocksdb",
 ]
 
 [[package]]

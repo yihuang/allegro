@@ -27,6 +27,9 @@ use reth_node_ethereum::EthereumEthApiBuilder;
 
 use reth_rpc_builder::Identity;
 
+// Brings `into_rpc()` on `IndexerRpc` into scope (the `#[rpc(server)]` macro puts it there).
+use allegro_indexer::IndexerApiServer;
+
 use crate::allegro_consensus::{AllegroConsensusBuilder, AllegroEngineValidatorBuilder};
 use reth_ethereum_engine_primitives::EthEngineTypes;
 
@@ -137,6 +140,28 @@ macro_rules! into_launched {
     }};
 }
 
+/// Install the transaction-index ExEx and its `eth_getTransactions` handler.
+///
+/// One RocksDB instance, two handles: the ExEx owns the writing side outright and
+/// the RPC handlers share a lock-free read handle, so a query answers mid-backfill
+/// instead of queueing behind the writer. Opened before either hook, so both land on
+/// the same database.
+macro_rules! with_indexer {
+    ($builder:expr, $store:expr) => {{
+        let (exex_store, rpc_store) = $store;
+        $builder
+            .install_exex("allegro-indexer", move |ctx| async move {
+                Ok(allegro_indexer::exex::run(ctx, exex_store))
+            })
+            .extend_rpc_modules(move |ctx| {
+                let rpc =
+                    allegro_indexer::IndexerRpc::new(ctx.registry.eth_api().clone(), rpc_store);
+                ctx.modules.merge_configured(rpc.into_rpc())?;
+                Ok(())
+            })
+    }};
+}
+
 /// Launch a reth node from the reth CLI's prepared builder (`allegro node`),
 /// swapping in allegro's relaxed-timestamp consensus and engine validation.
 pub async fn launch_with_builder(
@@ -144,14 +169,17 @@ pub async fn launch_with_builder(
 ) -> eyre::Result<LaunchedRethNode> {
     // Read the datadir before the builder is consumed by `with_types`.
     let datadir = builder.config().datadir().data_dir().to_path_buf();
+    let store = allegro_indexer::open_store(&datadir).wrap_err("failed to open the tx index")?;
+
+    let builder = builder
+        .with_types::<EthereumNode>()
+        .with_components(EthereumNode::components().consensus(AllegroConsensusBuilder))
+        .with_add_ons(allegro_add_ons!());
 
     let NodeHandle {
         node,
         node_exit_future,
-    } = builder
-        .with_types::<EthereumNode>()
-        .with_components(EthereumNode::components().consensus(AllegroConsensusBuilder))
-        .with_add_ons(allegro_add_ons!())
+    } = with_indexer!(builder, store)
         .launch()
         .await
         .wrap_err("failed to launch reth node")?;
@@ -206,15 +234,19 @@ pub async fn launch(
 
     let add_ons = allegro_add_ons!();
 
-    let NodeHandle {
-        node,
-        node_exit_future,
-    } = NodeBuilder::new(node_config)
+    let store = allegro_indexer::open_store(&datadir).wrap_err("failed to open the tx index")?;
+
+    let builder = NodeBuilder::new(node_config)
         .with_database(db)
         .with_launch_context(task_executor)
         .with_types()
         .with_components(components)
-        .with_add_ons(add_ons)
+        .with_add_ons(add_ons);
+
+    let NodeHandle {
+        node,
+        node_exit_future,
+    } = with_indexer!(builder, store)
         .launch()
         .await
         .wrap_err("failed to launch reth node")?;
