@@ -1,9 +1,9 @@
 //! `eth_getTransactions`, served from the ExEx-maintained index.
 //!
-//! The types mirror tempo's `crates/node/src/rpc/eth_ext` field for field: tempo declares
-//! the method and answers `unimplemented`, so its schema is the entire specification.
-//! Renaming a field here forks the API silently -- which is what tempo-e2e's wire tests
-//! in `test_indexer.py` exist to catch.
+//! The types mirror tempo's `crates/alloy/src/rpc/{pagination,transactions}.rs` field
+//! for field, because that schema is the entire specification -- tempo declares the
+//! method and this node answers it. Renaming a field here forks the API silently,
+//! which is what tempo-e2e's wire tests in `test_indexer.py` exist to catch.
 
 use alloy_primitives::Address;
 use futures::future::try_join_all;
@@ -12,14 +12,9 @@ use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::{helpers::EthTransactions, EthApiTypes, RpcTransaction};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Filter, Order, Position, Reader};
+use crate::store::{Filter, Order, Reader};
 
-/// Page size when the caller does not ask for one.
-const DEFAULT_LIMIT: usize = 10;
-/// Hard ceiling on a page, so one request cannot ask the node to serialize the world.
-const MAX_LIMIT: usize = 100;
-
-/// Sort direction. `sort.on` is accepted but not honoured -- see [`PaginationParams`].
+/// Sort direction. `sort.on` is accepted but not honoured -- see [`Sort::on`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SortOrder {
@@ -60,7 +55,8 @@ pub struct PaginationParams<Filters> {
     /// Which items to yield.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Filters>,
-    /// Maximum items to return. Defaults to 10; clamped to 1..=100.
+    /// Maximum items to return. Absent and out-of-range values are resolved by
+    /// `tx_index`, which owns the default and the ceiling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
     /// Ordering of the yielded items.
@@ -162,46 +158,23 @@ where
             tx_type: filters.type_,
         };
         let order: Order = params.sort.unwrap_or_default().order.into();
-        // Floor of 1, not just a ceiling: a zero limit returns no rows, so it has no
-        // last row to cut a cursor from, and the caller is told the page is final while
-        // `has_more` says otherwise -- a walk that ends one page in.
-        let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-        let after = params
-            .cursor
-            .as_deref()
-            .map(|cursor| {
-                Position::decode(cursor)
-                    .ok_or_else(|| internal_rpc_err(format!("malformed cursor: {cursor}")))
-            })
-            .transpose()?;
-
-        // One extra row tells us whether a further page exists. Counting instead would
-        // promise a next page that turns out empty at an exact multiple of the limit.
-        let mut found = self
+        let page = self
             .store
-            .query(&filter, after, order, limit.saturating_add(1))
-            .map_err(|e| internal_rpc_err(format!("index query failed: {e}")))?;
-
-        let has_more = found.len() > limit;
-        found.truncate(limit);
-        // The cursor names the last row returned, not the extra one peeked at.
-        let next_cursor = found
-            .last()
-            .filter(|_| has_more)
-            .map(|entry| entry.position.encode());
+            .page(&filter, params.cursor.as_deref(), order, params.limit)
+            .map_err(|e| internal_rpc_err(e.to_string()))?;
 
         // The lookups are independent, so overlap them instead of awaiting one at a
         // time -- a full page is up to 100. `try_join_all` keeps the rows in order.
         let sources = try_join_all(
-            found
+            page.rows
                 .iter()
-                .map(|entry| EthTransactions::transaction_by_hash(&self.eth_api, entry.hash)),
+                .map(|row| EthTransactions::transaction_by_hash(&self.eth_api, row.hash)),
         )
         .await
         .map_err(|e| internal_rpc_err(format!("failed to load transaction: {e}")))?;
 
-        let mut transactions = Vec::with_capacity(found.len());
+        let mut transactions = Vec::with_capacity(page.rows.len());
         // The index can name a transaction reth has since pruned; skip it rather than
         // failing the whole page.
         for source in sources.into_iter().flatten() {
@@ -212,7 +185,7 @@ where
         }
 
         Ok(TransactionsResponse {
-            next_cursor,
+            next_cursor: page.next_cursor,
             transactions,
         })
     }

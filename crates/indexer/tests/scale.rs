@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use allegro_indexer::store::{Filter, IndexedTx, Order, Position, Store, Tip};
+use allegro_indexer::store::{Filter, IndexedTx, Order, Plan, Position, Store, Tip};
 use alloy_primitives::{Address, B256};
 
 const BLOCKS: u64 = 20_000;
@@ -43,7 +43,11 @@ fn scale() {
             })
             .collect();
         store
-            .apply(None, &rows, Some(Tip::new(block, B256::ZERO)))
+            .apply(&Plan {
+                rows,
+                tip: Some(Tip::new(block, B256::ZERO)),
+                ..Default::default()
+            })
             .unwrap();
     }
     let write = t.elapsed();
@@ -105,11 +109,11 @@ fn scale() {
     // Destructive, so last: drop the top 100 blocks in one apply.
     let t = Instant::now();
     store
-        .apply(
-            Some(BLOCKS - 100),
-            &[],
-            Some(Tip::new(BLOCKS - 101, B256::ZERO)),
-        )
+        .apply(&Plan {
+            revert_from: Some(BLOCKS - 100),
+            tip: Some(Tip::new(BLOCKS - 101, B256::ZERO)),
+            ..Default::default()
+        })
         .unwrap();
     println!("revert 100 blocks         {:>12.1?}", t.elapsed());
 

@@ -39,7 +39,7 @@ commonware-utils = "2026.4.0"
 # ── Alloy ──
 alloy-consensus = { version = "2.1.1", default-features = false }
 alloy-primitives = { version = "1.6.1", default-features = false }
-tx-index = { git = "https://github.com/mmsqe/tempo-indexer", rev = "a77949e76765a2d08ef279e63682358eba4e43fc" }
+tx-index = { git = "https://github.com/mmsqe/tempo-indexer", rev = "747b279901f82c8a4e4dcc9a7f3dc075896d01b6" }
 alloy-rlp = { version = "0.3.16", default-features = false }
 alloy-genesis = { version = "2.1.0", default-features = false }
 alloy-rpc-types-engine = { version = "2.1", default-features = false }
