@@ -5,9 +5,11 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use commonware_actor::{Feedback, Unreliable};
 use commonware_cryptography::PublicKey as PublicKeyTrait;
 use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_runtime::{IoBuf, IoBufs};
+use tokio::sync::mpsc::error::TrySendError;
 
 /// Create a loopback channel pair for single-node testing.
 pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
@@ -16,10 +18,7 @@ pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
 ) -> (LoopbackSender<P>, LoopbackReceiver<P>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
-        LoopbackSender {
-            self_key,
-            tx: Arc::new(tokio::sync::Mutex::new(tx)),
-        },
+        LoopbackSender { self_key, tx },
         LoopbackReceiver {
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
         },
@@ -31,7 +30,7 @@ pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
 #[derive(Debug)]
 pub struct LoopbackSender<P> {
     self_key: P,
-    tx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Sender<(P, IoBuf)>>>,
+    tx: tokio::sync::mpsc::Sender<(P, IoBuf)>,
 }
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> LimitedSender for LoopbackSender<P> {
@@ -41,7 +40,7 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> LimitedSender for LoopbackSende
     where
         Self: 'a;
 
-    async fn check(
+    fn check(
         &mut self,
         _recipients: Recipients<P>,
     ) -> Result<Self::Checked<'_>, std::time::SystemTime> {
@@ -65,24 +64,27 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> Clone for LoopbackSender<P> {
 
 #[derive(Debug)]
 pub struct LoopbackCheckedSender<P> {
-    tx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Sender<(P, IoBuf)>>>,
+    tx: tokio::sync::mpsc::Sender<(P, IoBuf)>,
     sent_to: P,
 }
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> CheckedSender for LoopbackCheckedSender<P> {
     type PublicKey = P;
-    type Error = Infallible;
 
-    async fn send(
-        self,
-        message: impl Into<IoBufs> + Send,
-        _priority: bool,
-    ) -> Result<Vec<P>, Self::Error> {
+    fn recipients(&self) -> Vec<P> {
+        vec![self.sent_to.clone()]
+    }
+
+    /// Submission is non-blocking: `send` is synchronous now, so a full
+    /// loopback buffer drops the message rather than applying backpressure.
+    fn send(self, message: impl Into<IoBufs> + Send, _priority: bool) -> Unreliable<Feedback> {
         let bufs: IoBufs = message.into();
         let msg = bufs.coalesce();
-        let tx = self.tx.lock().await;
-        let _ = tx.send((self.sent_to.clone(), msg)).await;
-        Ok(vec![self.sent_to])
+        match self.tx.try_send((self.sent_to, msg)) {
+            Ok(()) => Unreliable::new(Feedback::Ok),
+            Err(TrySendError::Full(_)) => Unreliable::rejected(),
+            Err(TrySendError::Closed(_)) => Unreliable::new(Feedback::Closed),
+        }
     }
 }
 

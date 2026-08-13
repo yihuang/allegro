@@ -23,15 +23,45 @@ pub struct ConsensusConfig {
     /// Timeout for fetching blocks from peers.
     pub fetch_timeout: Duration,
 
-    /// Number of concurrent block fetches.
-    pub fetch_concurrent: usize,
+    /// Number of views behind the finalized tip to retain, in memory and in
+    /// the journal, for recent activity.
+    pub view_retention: u64,
 
-    /// Activity timeout in views — how many views without activity before
-    /// we consider the chain stalled.
-    pub activity_timeout: u64,
+    /// How long the selected leader may stay inactive, while a quorum of
+    /// participants is active, before we nullify the view. Must be greater
+    /// than both `certification_timeout` and `timeout_retry`.
+    pub skip_timeout: Duration,
 
-    /// Number of views to skip before switching leaders on inactivity.
-    pub skip_timeout: u64,
+    /// Number of consecutive views a single leader serves (a *term*).
+    ///
+    /// `1` elects a new leader every view (the classic rotation). Anything
+    /// greater enables stable leaders, which is **consensus-critical**: every
+    /// validator must configure the same value, and mismatches produce silent
+    /// disagreement on view transitions with no fault evidence. Only change it
+    /// with the whole validator set, at an epoch boundary.
+    pub term_length: u32,
+
+    /// How long an entered view may stay unfinalized before this node abandons
+    /// the term and nullifies, evicting a leader that keeps every per-view
+    /// timer satisfied without producing finality.
+    ///
+    /// Local policy — only read when `term_length > 1`. Must be greater than
+    /// `certification_timeout`.
+    pub stall_timeout: Duration,
+
+    /// How many views ahead of certified ancestry a participant may verify
+    /// proposals and broadcast notarize votes, within a term.
+    ///
+    /// Trades memory (the voter tracks a round per optimistic view) for view
+    /// latency that follows proposal propagation instead of certification.
+    /// Local policy — mismatches degrade the optimization but never safety.
+    /// `0` disables it, as does `term_length == 1`.
+    pub optimistic_views: u64,
+
+    /// Retain each individual vote until its round is pruned, rather than
+    /// releasing evidence once the certificate is built. Makes conflict
+    /// reporting and peer blocking reliable at the cost of memory.
+    pub track_historical_votes: bool,
 
     /// Forwarding policy for block proposals.
     pub forwarding_policy: ForwardingPolicy,
@@ -73,9 +103,12 @@ impl Default for ConsensusConfig {
             certification_timeout: Duration::from_secs(4),
             timeout_retry: Duration::from_secs(1),
             fetch_timeout: Duration::from_secs(2),
-            fetch_concurrent: 4,
-            activity_timeout: 10,
-            skip_timeout: 5,
+            view_retention: 10,
+            skip_timeout: Duration::from_secs(5),
+            term_length: 1,
+            stall_timeout: Duration::from_secs(8),
+            optimistic_views: 0,
+            track_historical_votes: false,
             forwarding_policy: ForwardingPolicy::SilentVoters,
             replay_buffer_size: 8 * 1024 * 1024, // 8 MB
             write_buffer_size: 1024 * 1024,      // 1 MB

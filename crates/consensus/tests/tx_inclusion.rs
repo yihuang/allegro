@@ -20,7 +20,7 @@ use alloy_primitives::{b256, keccak256, Address, Bytes, Signature, B256, U256};
 use alloy_rlp::Decodable;
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
-use commonware_runtime::{deterministic, Clock, Metrics, Runner};
+use commonware_runtime::{deterministic, Clock, Runner, Supervisor};
 use tracing::debug;
 
 use allegro_primitives::{AllegroConsensusContext, AllegroHeader, Digest, ProposerKey};
@@ -277,10 +277,11 @@ fn test_tx_inclusion_via_reth_payload_builder() {
 
         // ── Network ──
         let (net, oracle) = SimNetwork::new_with_peers(
-            context.with_label("net"),
+            context.child("net"),
             SimConfig {
                 max_size: 10 << 20,
                 disconnect_on_block: true,
+                max_peers_per_set: std::num::NonZeroUsize::new(64).unwrap(),
                 tracked_peer_sets: std::num::NonZeroUsize::new(3).unwrap(),
             },
             pks.clone(),
@@ -293,8 +294,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
                 &mut m,
                 0,
                 commonware_utils::ordered::Set::try_from(pks.clone()).unwrap(),
-            )
-            .await;
+            );
         }
         link_all(&oracle, &pks).await;
 
@@ -352,7 +352,7 @@ fn test_tx_inclusion_via_reth_payload_builder() {
 
             _h.push(
                 start_simplex_engine(
-                    context.with_label(&format!("e{i}")),
+                    context.child("engine").with_attribute("index", i),
                     EngineConfig {
                         signing_key: keys[i].clone(),
                         validators: vs.clone(),

@@ -20,7 +20,7 @@ use allegro_consensus::{
 use allegro_primitives::Digest;
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
-use commonware_runtime::{deterministic, Clock, Metrics, Runner};
+use commonware_runtime::{deterministic, Clock, Runner, Supervisor};
 use tracing::debug;
 
 /// Unlimited quota for simulated network (matching commonware's test pattern).
@@ -96,10 +96,11 @@ async fn start_engines(
 
     // Create simulated network
     let (network, oracle) = SimNetwork::new_with_peers(
-        context.with_label("sim_net"),
+        context.child("sim_net"),
         SimConfig {
             max_size: 10 * 1024 * 1024,
             disconnect_on_block: true,
+            max_peers_per_set: std::num::NonZeroUsize::new(64).unwrap(),
             tracked_peer_sets: std::num::NonZeroUsize::new(3).unwrap(),
         },
         pks.clone(),
@@ -111,7 +112,7 @@ async fn start_engines(
     {
         let mut mgr = oracle.manager();
         let peer_set = commonware_utils::ordered::Set::try_from(pks.clone()).unwrap();
-        commonware_p2p::Manager::track(&mut mgr, 0, peer_set).await;
+        commonware_p2p::Manager::track(&mut mgr, 0, peer_set);
     }
 
     // Add bidirectional links between all peers (required for message delivery)
@@ -146,7 +147,7 @@ async fn start_engines(
         };
 
         let started = start_simplex_engine(
-            context.with_label(&format!("engine_{i}")),
+            context.child("engine").with_attribute("index", i),
             engine_cfg,
             ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
             b_tx,
@@ -337,10 +338,11 @@ fn test_metrics_track_proposals() {
         let pks: Vec<_> = keys.iter().map(|sk| sk.public_key()).collect();
 
         let (network, oracle) = SimNetwork::new_with_peers(
-            context.with_label("sim_net"),
+            context.child("sim_net"),
             SimConfig {
                 max_size: 10 * 1024 * 1024,
                 disconnect_on_block: true,
+                max_peers_per_set: std::num::NonZeroUsize::new(64).unwrap(),
                 tracked_peer_sets: std::num::NonZeroUsize::new(3).unwrap(),
             },
             pks.clone(),
@@ -351,7 +353,7 @@ fn test_metrics_track_proposals() {
         {
             let mut mgr = oracle.manager();
             let peer_set = commonware_utils::ordered::Set::try_from(pks.clone()).unwrap();
-            commonware_p2p::Manager::track(&mut mgr, 0, peer_set).await;
+            commonware_p2p::Manager::track(&mut mgr, 0, peer_set);
         }
 
         // Add bidirectional links
@@ -394,7 +396,7 @@ fn test_metrics_track_proposals() {
             };
 
             let started = start_simplex_engine(
-                context.with_label(&format!("engine_{i}")),
+                context.child("engine").with_attribute("index", i),
                 engine_cfg,
                 ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
                 b_tx,
