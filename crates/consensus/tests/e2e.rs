@@ -94,8 +94,7 @@ async fn test_consensus_block_production() {
     let validators = ValidatorSet::from_entries(&entries);
     let (mut mailbox, _shutdown, _received) = spawn_actor(validators.clone());
 
-    let genesis: Digest = commonware_cryptography::Digest::EMPTY;
-    assert_eq!(genesis, Digest(B256::ZERO));
+    let genesis = Digest(B256::ZERO);
 
     let ctx1 = Context {
         round: Round::new(Epoch::new(0), View::new(1)),
@@ -148,7 +147,7 @@ async fn test_verify_rejects_inconsistent_timestamp_millis() {
     let validators = ValidatorSet::from_entries(&entries);
     let (mut mailbox, _shutdown, received) = spawn_actor(validators.clone());
 
-    let genesis: Digest = commonware_cryptography::Digest::EMPTY;
+    let genesis = Digest(B256::ZERO);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()

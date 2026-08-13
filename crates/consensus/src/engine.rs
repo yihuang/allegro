@@ -385,6 +385,12 @@ where
     BR: Receiver<PublicKey = PublicKey> + Send + 'static,
     BL: commonware_p2p::Blocker<PublicKey = PublicKey> + Clone + Send + 'static,
 {
+    // Re-checked here (not just in the binary) because tests and other
+    // embedders construct `EngineConfig` directly: a violation would otherwise
+    // surface as a panic inside `Engine::new`.
+    config.consensus_config.validate()?;
+    let cc = &config.consensus_config;
+
     let public_key = config.signing_key.public_key();
     info!(%public_key, "starting simplex engine");
 
@@ -406,21 +412,14 @@ where
     // A term length above one keeps the same leader for consecutive views and
     // unlocks the optimistic lookahead; one is the classic per-view rotation,
     // where commonware forbids both the stall timeout and the lookahead.
-    let elector = {
-        let base = RoundRobin::<Sha256>::default();
-        match config.consensus_config.term_length {
-            0 => {
-                return Err(ConsensusError::InvalidValidatorConfig(
-                    "term length must be non-zero".into(),
-                ))
-            }
-            1 => base,
-            length => base.with_term(
-                TermLength::new(NonZeroU32::new(length).expect("length > 1")),
-                config.consensus_config.stall_timeout,
-                ViewDelta::new(config.consensus_config.optimistic_views),
-            ),
-        }
+    // Zero was rejected by `validate` above.
+    let elector = match NonZeroU32::new(cc.term_length).filter(|l| l.get() > 1) {
+        Some(length) => RoundRobin::<Sha256>::default().with_term(
+            TermLength::new(length),
+            cc.stall_timeout,
+            ViewDelta::new(cc.optimistic_views),
+        ),
+        None => RoundRobin::default(),
     };
 
     // Create block stores shared between actor, relay, and receiver
@@ -443,7 +442,7 @@ where
     // Create the application actor (registers genesis block info internally)
     let (mut actor, mailbox) = application::Actor::new(
         config.validators,
-        config.consensus_config.mailbox_size,
+        cc.mailbox_size,
         Some(config.proposals.clone()),
         pending_blocks,
         received_blocks,
@@ -457,12 +456,12 @@ where
 
     let page_cache = CacheRef::from_pooler(
         &context,
-        NZU16!(config.consensus_config.page_cache_pages),
-        NZUsize!(config.consensus_config.page_cache_capacity),
+        NZU16!(cc.page_cache_pages),
+        NZUsize!(cc.page_cache_capacity),
     );
 
     // Map our forwarding policy to commonware's
-    let forwarding = match config.consensus_config.forwarding_policy {
+    let forwarding = match cc.forwarding_policy {
         crate::config::ForwardingPolicy::SilentVoters => ForwardingPolicy::SilentVoters,
         crate::config::ForwardingPolicy::All => ForwardingPolicy::SilentVoters,
     };
@@ -480,23 +479,23 @@ where
                 metrics.clone(),
                 config.finalized_tx,
             ),
-            track_historical_votes: config.consensus_config.track_historical_votes,
+            track_historical_votes: cc.track_historical_votes,
             strategy: commonware_parallel::Sequential,
             partition: config.partition.clone(),
-            mailbox_size: NZUsize!(config.consensus_config.mailbox_size),
+            mailbox_size: NZUsize!(cc.mailbox_size),
             epoch: Epoch::new(0),
             // The application registers block info for the empty digest at
             // startup and treats it as the genesis parent.
             floor: Floor::Genesis(<AllegroDigest as Digest>::EMPTY),
-            leader_timeout: config.consensus_config.leader_timeout,
-            certification_timeout: config.consensus_config.certification_timeout,
-            timeout_retry: config.consensus_config.timeout_retry,
-            view_retention: ViewDelta::new(config.consensus_config.view_retention),
-            skip_timeout: config.consensus_config.skip_timeout,
-            fetch_timeout: config.consensus_config.fetch_timeout,
+            leader_timeout: cc.leader_timeout,
+            certification_timeout: cc.certification_timeout,
+            timeout_retry: cc.timeout_retry,
+            view_retention: ViewDelta::new(cc.view_retention),
+            skip_timeout: cc.skip_timeout,
+            fetch_timeout: cc.fetch_timeout,
             forwarding,
-            replay_buffer: NZUsize!(config.consensus_config.replay_buffer_size),
-            write_buffer: NZUsize!(config.consensus_config.write_buffer_size),
+            replay_buffer: NZUsize!(cc.replay_buffer_size),
+            write_buffer: NZUsize!(cc.write_buffer_size),
             page_cache,
         },
     );

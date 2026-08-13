@@ -18,7 +18,10 @@ use allegro_consensus::{
     ValidatorSet,
 };
 use allegro_primitives::Digest;
-use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
+use commonware_cryptography::{
+    ed25519::{PrivateKey, PublicKey},
+    Signer as _,
+};
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
 use commonware_runtime::{deterministic, Clock, Runner, Supervisor};
 use tracing::debug;
@@ -469,13 +472,13 @@ fn test_metrics_track_proposals() {
 /// Fraction of adjacent view pairs `(v, v+1)` that share a proposer.
 /// Round-robin gives ~0; terms of length `T` give roughly `(T - 1) / T`.
 fn same_proposer_run_ratio(block_info: &allegro_consensus::application::BlockInfoMap) -> f64 {
-    let mut by_view: Vec<(u64, Vec<u8>)> = block_info
+    let mut by_view: Vec<(u64, PublicKey)> = block_info
         .read()
         .unwrap()
         .values()
         // View 0 is the genesis record the actor seeds at startup, not a proposal.
         .filter(|info| info.view > 0)
-        .map(|info| (info.view, info.proposer.as_ref().to_vec()))
+        .map(|info| (info.view, info.proposer.clone()))
         .collect();
     by_view.sort_by_key(|(view, _)| *view);
     by_view.dedup_by_key(|(view, _)| *view);

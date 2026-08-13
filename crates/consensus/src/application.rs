@@ -220,7 +220,6 @@ impl Actor {
     /// Returns the actor and its mailbox. The caller must call [`run()`](Self::run)
     /// to process messages.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         validators: ValidatorSet,
         mailbox_size: usize,

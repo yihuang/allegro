@@ -3,7 +3,6 @@
 //! Uses `tokio::sync::mpsc` under the hood. Works on the tokio runtime.
 
 use std::convert::Infallible;
-use std::sync::Arc;
 
 use commonware_actor::{Feedback, Unreliable};
 use commonware_cryptography::PublicKey as PublicKeyTrait;
@@ -17,12 +16,7 @@ pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
     capacity: usize,
 ) -> (LoopbackSender<P>, LoopbackReceiver<P>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-    (
-        LoopbackSender { self_key, tx },
-        LoopbackReceiver {
-            rx: Arc::new(tokio::sync::Mutex::new(rx)),
-        },
-    )
+    (LoopbackSender { self_key, tx }, LoopbackReceiver { rx })
 }
 
 // ── Sender ─────────────────────────────────────────────────
@@ -92,15 +86,7 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> CheckedSender for LoopbackCheck
 
 #[derive(Debug)]
 pub struct LoopbackReceiver<P> {
-    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<(P, IoBuf)>>>,
-}
-
-impl<P> Clone for LoopbackReceiver<P> {
-    fn clone(&self) -> Self {
-        Self {
-            rx: self.rx.clone(),
-        }
-    }
+    rx: tokio::sync::mpsc::Receiver<(P, IoBuf)>,
 }
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> Receiver for LoopbackReceiver<P> {
@@ -108,7 +94,6 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> Receiver for LoopbackReceiver<P
     type Error = Infallible;
 
     async fn recv(&mut self) -> Result<(P, IoBuf), Self::Error> {
-        let mut rx = self.rx.lock().await;
-        Ok(rx.recv().await.expect("channel should not close"))
+        Ok(self.rx.recv().await.expect("channel should not close"))
     }
 }
