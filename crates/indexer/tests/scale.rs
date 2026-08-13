@@ -22,6 +22,61 @@ fn addr(n: u64) -> Address {
     Address::from(b)
 }
 
+/// One block's worth of rows.
+fn rows_of(block: u64) -> Vec<IndexedTx> {
+    (0..TXS_PER_BLOCK)
+        .map(|i| {
+            let n = block * u64::from(TXS_PER_BLOCK) + u64::from(i);
+            IndexedTx {
+                position: Position::new(block, i),
+                hash: B256::from([n as u8; 32]),
+                from: addr(n % SENDERS),
+                to: Some(addr(n % RECIPIENTS)),
+                tx_type: (n % 3) as u8,
+            }
+        })
+        .collect()
+}
+
+/// What [`Plan::merge`] buys the ExEx: the same blocks folded `batch` at a time
+/// into one `apply`, against one `apply` per block.
+///
+/// Run alongside `scale` to compare; separate so the numbers above stay the
+/// per-block baseline they have always been.
+#[test]
+#[ignore = "prints timings; run explicitly with --ignored --nocapture"]
+fn batched_write() {
+    println!("\n{BLOCKS} blocks x {TXS_PER_BLOCK} txs");
+    for batch in [1_u64, 8, 64, 256] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("indexer")).unwrap();
+
+        let t = Instant::now();
+        let mut block = 0;
+        while block < BLOCKS {
+            let last = (block + batch - 1).min(BLOCKS - 1);
+            // Exactly what `run` does with a queue `batch` deep.
+            let mut folded = Plan::default();
+            for b in block..=last {
+                folded.merge(Plan {
+                    rows: rows_of(b),
+                    tip: Some(Tip::new(b, B256::ZERO)),
+                    committed: Some(Tip::new(b, B256::ZERO)),
+                    ..Default::default()
+                });
+            }
+            store.apply(&folded).unwrap();
+            block = last + 1;
+        }
+        let elapsed = t.elapsed();
+        println!(
+            "batch={batch:<4}{:>12.1?}   ({:.0}k blocks/s)",
+            elapsed,
+            BLOCKS as f64 / elapsed.as_secs_f64() / 1000.0
+        );
+    }
+}
+
 #[test]
 #[ignore = "prints timings; run explicitly with --ignored --nocapture"]
 fn scale() {
