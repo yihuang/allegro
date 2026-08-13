@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use alloy_primitives::B256;
 use bytes::Buf;
+use commonware_actor::Feedback;
 use commonware_consensus::{
     simplex::{
         elector::RoundRobin, scheme::ed25519, types::Activity, Engine, Floor, ForwardingPolicy,
@@ -27,7 +28,6 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
     Digest, Sha256, Signer as _,
 };
-use commonware_actor::Feedback;
 use commonware_p2p::{CheckedSender as _, Receiver, Recipients, Sender};
 use commonware_runtime::{
     buffer::paged::CacheRef, BufferPooler, Clock, Handle, Metrics, Network, Pacer, Spawner, Storage,

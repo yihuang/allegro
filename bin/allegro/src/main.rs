@@ -445,10 +445,8 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring
 
     runner.start(|context| async move {
         // ── Consensus P2P ──
-        let (mut network, mut oracle) = lookup::Network::new(
-            context.child("p2p"),
-            dev_lookup_config(&args, sk.clone()),
-        );
+        let (mut network, mut oracle) =
+            lookup::Network::new(context.child("p2p"), dev_lookup_config(&args, sk.clone()));
         let q =
             |n| commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"));
         let votes = network.register(0, q(128));
