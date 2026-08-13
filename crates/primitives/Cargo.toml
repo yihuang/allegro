@@ -20,7 +20,6 @@ commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-utils.workspace = true
-ed25519-consensus.workspace = true
 rand_core.workspace = true
 serde = { workspace = true, optional = true }
 

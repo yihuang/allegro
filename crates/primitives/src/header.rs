@@ -60,11 +60,9 @@ impl AllegroConsensusContext {
     /// Panics if the raw bytes are not a valid Ed25519 point (should never
     /// happen for keys that were originally created from a valid public key).
     pub fn proposer_commonware(&self) -> commonware_cryptography::ed25519::PublicKey {
-        use ed25519_consensus::VerificationKey;
-        let vkb = ed25519_consensus::VerificationKeyBytes::from(self.proposer.0);
-        let vk = VerificationKey::try_from(vkb)
-            .expect("ProposerKey bytes should be a valid Ed25519 point");
-        commonware_cryptography::ed25519::PublicKey::from(vk)
+        use commonware_codec::DecodeExt as _;
+        commonware_cryptography::ed25519::PublicKey::decode(self.proposer.0.as_slice())
+            .expect("ProposerKey bytes should be a valid Ed25519 point")
     }
 
     /// Build from a Commonware `ed25519::PublicKey`.

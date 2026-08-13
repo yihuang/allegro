@@ -9,28 +9,31 @@
 //! - Configurable parameters with sensible defaults
 
 use std::marker::PhantomData;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alloy_primitives::B256;
 use bytes::Buf;
+use commonware_actor::Feedback;
 use commonware_consensus::{
     simplex::{
-        elector::RoundRobin, scheme::ed25519, types::Activity, Engine, ForwardingPolicy, Plan,
+        elector::RoundRobin, scheme::ed25519, types::Activity, Engine, Floor, ForwardingPolicy,
+        Plan,
     },
-    types::{Epoch, ViewDelta},
+    types::{Epoch, TermLength, ViewDelta},
     Relay, Reporter,
 };
 use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
     Digest, Sha256, Signer as _,
 };
-use commonware_p2p::{Receiver, Recipients, Sender};
+use commonware_p2p::{CheckedSender as _, Receiver, Recipients, Sender};
 use commonware_runtime::{
     buffer::paged::CacheRef, BufferPooler, Clock, Handle, Metrics, Network, Pacer, Spawner, Storage,
 };
 use commonware_utils::{ordered::Set, NZUsize, NZU16};
-use rand_08::{CryptoRng, Rng};
+use rand_core::CryptoRng;
 use tracing::{debug, error, info, warn};
 
 use allegro_primitives::Digest as AllegroDigest;
@@ -73,7 +76,10 @@ impl<S: Sender<PublicKey = PublicKey> + Send + 'static> Relay for BlockRelay<S> 
     type PublicKey = PublicKey;
     type Plan = Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest, _plan: Self::Plan) {
+    // Broadcasting is synchronous now: consensus must not be blocked on block
+    // distribution, so a submission that the transport rejects is dropped and
+    // counted rather than retried here.
+    fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) -> Feedback {
         // Look up the block bytes from our pending store
         let block_bytes = {
             let pending = self.pending.lock().expect("pending lock poisoned");
@@ -82,7 +88,7 @@ impl<S: Sender<PublicKey = PublicKey> + Send + 'static> Relay for BlockRelay<S> 
 
         let Some(block_bytes) = block_bytes else {
             debug!(%digest, "broadcast called but block not in pending store");
-            return;
+            return Feedback::Ok;
         };
 
         // Wire format: 32-byte digest + block bytes
@@ -90,20 +96,34 @@ impl<S: Sender<PublicKey = PublicKey> + Send + 'static> Relay for BlockRelay<S> 
         msg.extend_from_slice(digest.as_ref());
         msg.extend_from_slice(&block_bytes);
 
-        match self.sender.send(Recipients::All, msg, false).await {
-            Ok(sent) => {
-                info!(%digest, count = sent.len(), "broadcast block to peers");
-                if let Some(ref m) = self.metrics {
-                    m.inc_blocks_broadcast();
-                }
+        // Initial proposals go to everyone; forwards target the plan's recipients.
+        let recipients = match plan {
+            Plan::Propose { .. } => Recipients::All,
+            Plan::Forward { recipients, .. } => recipients,
+        };
+
+        // `check` first so a rate-limited transport is distinguishable from
+        // simply having no peers (both leave `Sender::send` with an empty list).
+        let Ok(checked) = self.sender.check(recipients) else {
+            warn!(%digest, "all recipients rate-limited; dropping block broadcast");
+            if let Some(ref m) = self.metrics {
+                m.inc_errors();
             }
-            Err(e) => {
-                warn!(?e, "failed to broadcast block");
-                if let Some(ref m) = self.metrics {
-                    m.inc_errors();
-                }
+            return Feedback::Ok;
+        };
+        let count = checked.recipients().len();
+        if checked.send(msg, false).accepted() {
+            info!(%digest, count, "broadcast block to peers");
+            if let Some(ref m) = self.metrics {
+                m.inc_blocks_broadcast();
+            }
+        } else {
+            warn!(%digest, "failed to broadcast block");
+            if let Some(ref m) = self.metrics {
+                m.inc_errors();
             }
         }
+        Feedback::Ok
     }
 }
 
@@ -180,7 +200,7 @@ impl<S: commonware_cryptography::certificate::Scheme> Reporter
 {
     type Activity = Activity<S, AllegroDigest>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         // Forward finalization to the reth finalizer task.
         if let Activity::Finalization(cert) = &activity {
             if let Some(ref mut tx) = self.finalized_tx {
@@ -194,7 +214,7 @@ impl<S: commonware_cryptography::certificate::Scheme> Reporter
                 m.inc_blocks_finalized();
             }
         }
-        self.inner.report(activity).await;
+        self.inner.report(activity)
     }
 }
 
@@ -222,7 +242,7 @@ impl<S: commonware_cryptography::certificate::Scheme, D: Digest> Reporter
 {
     type Activity = Activity<S, D>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         match activity {
             Activity::Notarize(vote) => {
                 info!(view = %vote.round().view(), "notarize vote");
@@ -267,6 +287,7 @@ impl<S: commonware_cryptography::certificate::Scheme, D: Digest> Reporter
                 warn!("nullify+finalize evidence");
             }
         }
+        Feedback::Ok
     }
 }
 
@@ -356,21 +377,18 @@ pub fn start_simplex_engine<TContext, BS, BR, BL>(
     blocker: BL,
 ) -> Result<StartedEngine, ConsensusError>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Network
-        + Pacer
-        + Spawner
-        + Storage
-        + 'static,
+    TContext:
+        BufferPooler + Clock + CryptoRng + Metrics + Network + Pacer + Spawner + Storage + 'static,
     BS: Sender<PublicKey = PublicKey> + Clone + Send + 'static,
     BR: Receiver<PublicKey = PublicKey> + Send + 'static,
     BL: commonware_p2p::Blocker<PublicKey = PublicKey> + Clone + Send + 'static,
 {
+    // Re-checked here (not just in the binary) because tests and other
+    // embedders construct `EngineConfig` directly: a violation would otherwise
+    // surface as a panic inside `Engine::new`.
+    config.consensus_config.validate()?;
+    let cc = &config.consensus_config;
+
     let public_key = config.signing_key.public_key();
     info!(%public_key, "starting simplex engine");
 
@@ -389,7 +407,18 @@ where
     let scheme = ed25519::Scheme::signer(namespace, participants.clone(), config.signing_key)
         .unwrap_or_else(|| ed25519::Scheme::verifier(namespace, participants.clone()));
 
-    let elector = RoundRobin::<Sha256>::default();
+    // A term length above one keeps the same leader for consecutive views and
+    // unlocks the optimistic lookahead; one is the classic per-view rotation,
+    // where commonware forbids both the stall timeout and the lookahead.
+    // Zero was rejected by `validate` above.
+    let elector = match NonZeroU32::new(cc.term_length).filter(|l| l.get() > 1) {
+        Some(length) => RoundRobin::<Sha256>::default().with_term(
+            TermLength::new(length),
+            cc.stall_timeout,
+            ViewDelta::new(cc.optimistic_views),
+        ),
+        None => RoundRobin::default(),
+    };
 
     // Create block stores shared between actor, relay, and receiver
     let (pending_blocks, received_blocks, block_info) = application::new_block_stores();
@@ -401,7 +430,7 @@ where
 
     // Spawn the block receiver task
     spawn_block_receiver(
-        context.with_label("block_rx"),
+        context.child("block_rx"),
         block_receiver,
         received_blocks.clone(),
         block_info.clone(),
@@ -411,7 +440,7 @@ where
     // Create the application actor (registers genesis block info internally)
     let (mut actor, mailbox) = application::Actor::new(
         config.validators,
-        config.consensus_config.mailbox_size,
+        cc.mailbox_size,
         Some(config.proposals.clone()),
         pending_blocks,
         received_blocks,
@@ -425,19 +454,19 @@ where
 
     let page_cache = CacheRef::from_pooler(
         &context,
-        NZU16!(config.consensus_config.page_cache_pages),
-        NZUsize!(config.consensus_config.page_cache_capacity),
+        NZU16!(cc.page_cache_pages),
+        NZUsize!(cc.page_cache_capacity),
     );
 
     // Map our forwarding policy to commonware's
-    let forwarding = match config.consensus_config.forwarding_policy {
+    let forwarding = match cc.forwarding_policy {
         crate::config::ForwardingPolicy::SilentVoters => ForwardingPolicy::SilentVoters,
         crate::config::ForwardingPolicy::All => ForwardingPolicy::SilentVoters,
     };
 
     // Build the simplex engine
     let engine = Engine::new(
-        context.with_label("simplex"),
+        context.child("simplex"),
         commonware_consensus::simplex::Config {
             scheme,
             elector,
@@ -448,20 +477,23 @@ where
                 metrics.clone(),
                 config.finalized_tx,
             ),
+            track_historical_votes: cc.track_historical_votes,
             strategy: commonware_parallel::Sequential,
             partition: config.partition.clone(),
-            mailbox_size: config.consensus_config.mailbox_size,
+            mailbox_size: NZUsize!(cc.mailbox_size),
             epoch: Epoch::new(0),
-            leader_timeout: config.consensus_config.leader_timeout,
-            certification_timeout: config.consensus_config.certification_timeout,
-            timeout_retry: config.consensus_config.timeout_retry,
-            activity_timeout: ViewDelta::new(config.consensus_config.activity_timeout),
-            skip_timeout: ViewDelta::new(config.consensus_config.skip_timeout),
-            fetch_timeout: config.consensus_config.fetch_timeout,
-            fetch_concurrent: config.consensus_config.fetch_concurrent,
+            // The application registers block info for the empty digest at
+            // startup and treats it as the genesis parent.
+            floor: Floor::Genesis(<AllegroDigest as Digest>::EMPTY),
+            leader_timeout: cc.leader_timeout,
+            certification_timeout: cc.certification_timeout,
+            timeout_retry: cc.timeout_retry,
+            view_retention: ViewDelta::new(cc.view_retention),
+            skip_timeout: cc.skip_timeout,
+            fetch_timeout: cc.fetch_timeout,
             forwarding,
-            replay_buffer: NZUsize!(config.consensus_config.replay_buffer_size),
-            write_buffer: NZUsize!(config.consensus_config.write_buffer_size),
+            replay_buffer: NZUsize!(cc.replay_buffer_size),
+            write_buffer: NZUsize!(cc.write_buffer_size),
             page_cache,
         },
     );

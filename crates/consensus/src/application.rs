@@ -10,10 +10,12 @@
 //! implements [`Automaton`]. Messages are sent over an mpsc channel from the
 //! engine to the actor, which processes them sequentially:
 //!
-//! 1. `Genesis` — returns the genesis block digest
-//! 2. `Propose` — builds a new block via the payload builder
-//! 3. `Verify` — validates a block from another proposer
-//! 4. `Broadcast` — engine asks to broadcast a block (handled by the relay)
+//! 1. `Propose` — builds a new block via the payload builder
+//! 2. `Verify` — validates a block from another proposer
+//! 3. `Broadcast` — engine asks to broadcast a block (handled by the relay)
+//!
+//! The genesis digest is no longer requested through the automaton; the engine
+//! takes it directly as its [`commonware_consensus::simplex::Floor`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -23,10 +25,13 @@ use alloy_primitives::B256;
 use commonware_consensus::{
     simplex::types::Context,
     simplex::Plan,
-    types::{Epoch, Round, View},
+    types::{Round, View},
     Automaton, CertifiableAutomaton,
 };
-use commonware_cryptography::{ed25519::PublicKey, Signer as _};
+use commonware_cryptography::{
+    ed25519::{PrivateKey, PublicKey},
+    Signer as _,
+};
 use commonware_utils::channel::oneshot;
 use futures::{channel::mpsc, SinkExt, StreamExt};
 use tracing::{debug, error, info, warn};
@@ -76,21 +81,9 @@ pub fn new_block_stores() -> (PendingBlocks, ReceivedBlocks, BlockInfoMap) {
 
 /// Messages from the consensus engine to the application actor.
 pub enum Message {
-    Genesis(Genesis),
     Propose(Box<Propose>),
     Verify(Box<Verify>),
     Broadcast(Box<Broadcast>),
-}
-
-pub struct Genesis {
-    pub epoch: Epoch,
-    pub response: oneshot::Sender<AllegroDigest>,
-}
-
-impl From<Genesis> for Message {
-    fn from(v: Genesis) -> Self {
-        Self::Genesis(v)
-    }
 }
 
 pub struct Propose {
@@ -148,26 +141,6 @@ impl Mailbox {
 impl Automaton for Mailbox {
     type Context = Context<AllegroDigest, PublicKey>;
     type Digest = AllegroDigest;
-
-    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
-        let (tx, rx) = oneshot::channel();
-        if self
-            .sender
-            .send(
-                Genesis {
-                    epoch,
-                    response: tx,
-                }
-                .into(),
-            )
-            .await
-            .is_err()
-        {
-            warn!("application actor dropped, returning empty digest for genesis");
-            return commonware_cryptography::Digest::EMPTY;
-        }
-        rx.await.unwrap_or(commonware_cryptography::Digest::EMPTY)
-    }
 
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
         let (tx, rx) = oneshot::channel();
@@ -250,7 +223,6 @@ impl Actor {
     /// Returns the actor and its mailbox. The caller must call [`run()`](Self::run)
     /// to process messages.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         validators: ValidatorSet,
         mailbox_size: usize,
@@ -266,7 +238,7 @@ impl Actor {
     ) -> (Self, Mailbox) {
         // Register genesis block info
         let genesis_digest = commonware_cryptography::Digest::EMPTY;
-        let genesis_sk = commonware_cryptography::ed25519::PrivateKey::from_seed(0);
+        let genesis_sk = PrivateKey::from_seed(0);
         match block_info.write() {
             Ok(mut guard) => {
                 guard.insert(
@@ -307,20 +279,12 @@ impl Actor {
         info!("application actor started");
         while let Some(msg) = self.receiver.next().await {
             match msg {
-                Message::Genesis(g) => self.handle_genesis(g).await,
                 Message::Propose(p) => self.handle_propose(*p).await,
                 Message::Verify(v) => self.handle_verify(*v).await,
                 Message::Broadcast(b) => self.handle_broadcast(*b).await,
             }
         }
         warn!("application actor stopped");
-    }
-
-    async fn handle_genesis(&mut self, msg: Genesis) {
-        info!(epoch = %msg.epoch.get(), "genesis");
-        let digest = commonware_cryptography::Digest::EMPTY;
-        // Genesis block info was already registered in `new()`. Just respond.
-        let _ = msg.response.send(digest);
     }
 
     async fn handle_propose(&mut self, msg: Propose) {

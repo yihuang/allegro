@@ -5,7 +5,7 @@ use bytes::BufMut;
 use commonware_codec::{FixedSize, Read, ReadExt, Write};
 use commonware_utils::{Array, Span};
 use core::ops::Deref;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 
 /// Wrapper around [`B256`] for use in places requiring
 /// [`commonware_cryptography::Digest`].
@@ -37,7 +37,7 @@ impl Deref for Digest {
 }
 
 impl commonware_math::algebra::Random for Digest {
-    fn random(mut rng: impl CryptoRngCore) -> Self {
+    fn random(mut rng: impl CryptoRng) -> Self {
         let mut array = B256::ZERO;
         rng.fill_bytes(&mut *array);
         Self(array)

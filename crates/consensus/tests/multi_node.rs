@@ -18,9 +18,12 @@ use allegro_consensus::{
     ValidatorSet,
 };
 use allegro_primitives::Digest;
-use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
+use commonware_cryptography::{
+    ed25519::{PrivateKey, PublicKey},
+    Signer as _,
+};
 use commonware_p2p::simulated::{Config as SimConfig, Link, Network as SimNetwork};
-use commonware_runtime::{deterministic, Clock, Metrics, Runner};
+use commonware_runtime::{deterministic, Clock, Runner, Supervisor as _};
 use tracing::debug;
 
 /// Unlimited quota for simulated network (matching commonware's test pattern).
@@ -91,15 +94,32 @@ async fn start_engines(
     validator_set: &ValidatorSet,
     cfg: &ConsensusConfig,
 ) -> Vec<Arc<std::sync::Mutex<Vec<Digest>>>> {
+    start_engines_full(context, keys, validator_set, cfg)
+        .await
+        .0
+}
+
+/// Like [`start_engines`], but also hands back each node's block-info map so a
+/// test can inspect the `(view, proposer)` pairs the node observed.
+async fn start_engines_full(
+    context: &deterministic::Context,
+    keys: &[PrivateKey],
+    validator_set: &ValidatorSet,
+    cfg: &ConsensusConfig,
+) -> (
+    Vec<Arc<std::sync::Mutex<Vec<Digest>>>>,
+    Vec<allegro_consensus::application::BlockInfoMap>,
+) {
     let n = keys.len();
     let pks: Vec<_> = keys.iter().map(|sk| sk.public_key()).collect();
 
     // Create simulated network
     let (network, oracle) = SimNetwork::new_with_peers(
-        context.with_label("sim_net"),
+        context.child("sim_net"),
         SimConfig {
             max_size: 10 * 1024 * 1024,
             disconnect_on_block: true,
+            max_peers_per_set: std::num::NonZeroUsize::new(64).unwrap(),
             tracked_peer_sets: std::num::NonZeroUsize::new(3).unwrap(),
         },
         pks.clone(),
@@ -111,7 +131,7 @@ async fn start_engines(
     {
         let mut mgr = oracle.manager();
         let peer_set = commonware_utils::ordered::Set::try_from(pks.clone()).unwrap();
-        commonware_p2p::Manager::track(&mut mgr, 0, peer_set).await;
+        commonware_p2p::Manager::track(&mut mgr, 0, peer_set);
     }
 
     // Add bidirectional links between all peers (required for message delivery)
@@ -146,7 +166,7 @@ async fn start_engines(
         };
 
         let started = start_simplex_engine(
-            context.with_label(&format!("engine_{i}")),
+            context.child("engine").with_attribute("index", i),
             engine_cfg,
             ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
             b_tx,
@@ -157,13 +177,15 @@ async fn start_engines(
         _handles.push(started);
     }
 
+    let block_infos: Vec<_> = _handles.iter().map(|se| se.block_info.clone()).collect();
+
     // Keep engines alive by leaking the handles (they live for the test duration)
     // Convert StartedEngine → Handle<()> for leaking
     let _leak = Box::leak(Box::new(
         _handles.into_iter().map(|se| se.task).collect::<Vec<_>>(),
     ));
 
-    proposal_logs
+    (proposal_logs, block_infos)
 }
 
 /// Default test config tuned for fast deterministic execution.
@@ -337,10 +359,11 @@ fn test_metrics_track_proposals() {
         let pks: Vec<_> = keys.iter().map(|sk| sk.public_key()).collect();
 
         let (network, oracle) = SimNetwork::new_with_peers(
-            context.with_label("sim_net"),
+            context.child("sim_net"),
             SimConfig {
                 max_size: 10 * 1024 * 1024,
                 disconnect_on_block: true,
+                max_peers_per_set: std::num::NonZeroUsize::new(64).unwrap(),
                 tracked_peer_sets: std::num::NonZeroUsize::new(3).unwrap(),
             },
             pks.clone(),
@@ -351,7 +374,7 @@ fn test_metrics_track_proposals() {
         {
             let mut mgr = oracle.manager();
             let peer_set = commonware_utils::ordered::Set::try_from(pks.clone()).unwrap();
-            commonware_p2p::Manager::track(&mut mgr, 0, peer_set).await;
+            commonware_p2p::Manager::track(&mut mgr, 0, peer_set);
         }
 
         // Add bidirectional links
@@ -394,7 +417,7 @@ fn test_metrics_track_proposals() {
             };
 
             let started = start_simplex_engine(
-                context.with_label(&format!("engine_{i}")),
+                context.child("engine").with_attribute("index", i),
                 engine_cfg,
                 ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
                 b_tx,
@@ -437,4 +460,88 @@ fn test_metrics_track_proposals() {
             "val1: metrics {proposed_v1} > log {log_v1}"
         );
     });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MN6: Stable leaders serve a term of consecutive views
+//
+//  Covers commonwarexyz/monorepo#3352 (stable leaders) and #3416
+//  (optimistic proposal and validation).
+// ═══════════════════════════════════════════════════════════════
+
+/// Fraction of adjacent view pairs `(v, v+1)` that share a proposer.
+/// Round-robin gives ~0; terms of length `T` give roughly `(T - 1) / T`.
+fn same_proposer_run_ratio(block_info: &allegro_consensus::application::BlockInfoMap) -> f64 {
+    let mut by_view: Vec<(u64, PublicKey)> = block_info
+        .read()
+        .unwrap()
+        .values()
+        // View 0 is the genesis record the actor seeds at startup, not a proposal.
+        .filter(|info| info.view > 0)
+        .map(|info| (info.view, info.proposer.clone()))
+        .collect();
+    by_view.sort_by_key(|(view, _)| *view);
+    by_view.dedup_by_key(|(view, _)| *view);
+
+    let adjacent: Vec<bool> = by_view
+        .windows(2)
+        .filter(|w| w[1].0 == w[0].0 + 1)
+        .map(|w| w[1].1 == w[0].1)
+        .collect();
+    assert!(
+        adjacent.len() >= 8,
+        "need consecutive views to measure leader runs, got {} pairs",
+        adjacent.len()
+    );
+    adjacent.iter().filter(|same| **same).count() as f64 / adjacent.len() as f64
+}
+
+/// `term_length > 1` keeps one leader across a run of views, and
+/// `optimistic_views` lets participants notarize ahead of certified ancestry
+/// within that run. Both default to off, so this is the test that covers them.
+///
+/// Proposal totals even out across terms, so the check compares the
+/// adjacent-view run ratio against a round-robin baseline instead.
+#[test]
+fn test_stable_leader_serves_consecutive_views() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::filter::EnvFilter::new("allegro=warn"))
+        .try_init();
+
+    let n = 4;
+    let run_for = Duration::from_secs(10);
+    let stable = ConsensusConfig {
+        term_length: 8,
+        // Must exceed the certification timeout; generous here so a term is
+        // never abandoned mid-run.
+        stall_timeout: Duration::from_secs(30),
+        optimistic_views: 4,
+        ..test_config()
+    };
+    let rotating = test_config();
+
+    let measure = |cfg: ConsensusConfig| {
+        deterministic::Runner::default().start(|context| async move {
+            let (keys, validator_set) = build_validators(n);
+            let (_logs, block_infos) =
+                start_engines_full(&context, &keys, &validator_set, &cfg).await;
+            advance_time(&context, run_for, Duration::from_millis(100)).await;
+            same_proposer_run_ratio(&block_infos[0])
+        })
+    };
+
+    let stable_ratio = measure(stable);
+    let rotating_ratio = measure(rotating);
+    debug!("same-proposer run ratio: stable={stable_ratio:.3} rotating={rotating_ratio:.3}");
+
+    // Steady state is 7/8; the slack covers term boundaries and nullified views.
+    assert!(
+        stable_ratio > 0.5,
+        "8-view terms should keep the same proposer across most adjacent views, got {stable_ratio:.3}"
+    );
+    // Rotation only repeats a proposer when a view is skipped, rare on perfect links.
+    assert!(
+        rotating_ratio < 0.2,
+        "rotation should change proposer nearly every view, got {rotating_ratio:.3}"
+    );
 }

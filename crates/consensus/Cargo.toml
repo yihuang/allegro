@@ -16,8 +16,8 @@ allegro-primitives.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 bytes.workspace = true
+commonware-actor.workspace = true
 commonware-codec.workspace = true
-governor.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-p2p = { workspace = true, features = ["mocks"] }
@@ -26,7 +26,7 @@ commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
-rand_08.workspace = true
+rand_core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

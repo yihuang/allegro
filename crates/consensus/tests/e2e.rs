@@ -28,8 +28,8 @@ use commonware_consensus::{
     types::{Epoch, Round, View},
     Automaton,
 };
-use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
-use commonware_runtime::{deterministic, Clock, Metrics, Runner};
+use commonware_cryptography::{ed25519::PrivateKey, Digest as _, Signer as _};
+use commonware_runtime::{deterministic, Clock, Runner, Supervisor as _};
 use tokio::sync::oneshot;
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -39,7 +39,9 @@ use tokio::sync::oneshot;
 struct NoopBlocker;
 impl commonware_p2p::Blocker for NoopBlocker {
     type PublicKey = commonware_cryptography::ed25519::PublicKey;
-    async fn block(&mut self, _peer: Self::PublicKey) {}
+    fn block(&mut self, _peer: Self::PublicKey) -> commonware_actor::Feedback {
+        commonware_actor::Feedback::Ok
+    }
 }
 
 fn make_validator(seed: u8, port: u16) -> ValidatorEntry {
@@ -92,7 +94,7 @@ async fn test_consensus_block_production() {
     let validators = ValidatorSet::from_entries(&entries);
     let (mut mailbox, _shutdown, _received) = spawn_actor(validators.clone());
 
-    let genesis = mailbox.genesis(Epoch::new(0)).await;
+    let genesis = Digest::EMPTY;
     assert_eq!(genesis, Digest(B256::ZERO));
 
     let ctx1 = Context {
@@ -146,7 +148,7 @@ async fn test_verify_rejects_inconsistent_timestamp_millis() {
     let validators = ValidatorSet::from_entries(&entries);
     let (mut mailbox, _shutdown, received) = spawn_actor(validators.clone());
 
-    let genesis = mailbox.genesis(Epoch::new(0)).await;
+    let genesis = Digest::EMPTY;
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
@@ -301,7 +303,7 @@ fn test_simplex_engine_initializes() {
         let (b_tx, b_rx) = inert_channel(&participants);
         let blocker = NoopBlocker;
         let started = start_simplex_engine(
-            context.with_label("engine"),
+            context.child("engine"),
             cfg,
             ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
             b_tx,
@@ -380,7 +382,7 @@ fn test_simplex_engine_loopback() {
         let (b_tx, b_rx) = loopback_channel(pk_for_channel.clone(), 1024);
         let blocker = NoopBlocker;
         let started = start_simplex_engine(
-            context.with_label("engine"),
+            context.child("engine"),
             cfg,
             ((vote_tx, vote_rx), (cert_tx, cert_rx), (res_tx, res_rx)),
             b_tx,
@@ -422,10 +424,11 @@ fn test_two_validators_simulated() {
 
         // Simulated network with all peers
         let (network, oracle) = SimNetwork::new_with_peers(
-            context.with_label("sim_net"),
+            context.child("sim_net"),
             SimConfig {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
+                max_peers_per_set: std::num::NonZeroUsize::new(64).unwrap(),
                 tracked_peer_sets: std::num::NonZeroUsize::new(3).unwrap(),
             },
             pks.clone(),
@@ -437,7 +440,7 @@ fn test_two_validators_simulated() {
         // Track all peers
         let mut mgr = oracle.manager();
         let peer_set = commonware_utils::ordered::Set::try_from(pks.clone()).unwrap();
-        commonware_p2p::Manager::track(&mut mgr, 0, peer_set).await;
+        commonware_p2p::Manager::track(&mut mgr, 0, peer_set);
         drop(mgr);
 
         // Validator entries and set
@@ -488,7 +491,7 @@ fn test_two_validators_simulated() {
             };
 
             let started = start_simplex_engine(
-                context.with_label(&format!("engine_{i}")),
+                context.child("engine").with_attribute("index", i),
                 cfg,
                 ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
                 b_tx,
@@ -551,7 +554,7 @@ fn test_empty_validator_set_rejected() {
         };
 
         let result = start_simplex_engine(
-            context.with_label("engine"),
+            context.child("engine"),
             cfg,
             ((v_tx, v_rx), (c_tx, c_rx), (r_tx, r_rx)),
             b_tx,

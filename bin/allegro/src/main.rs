@@ -26,7 +26,7 @@ use clap::{Args, Parser};
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::authenticated::lookup;
 use commonware_p2p::AddressableManager;
-use commonware_runtime::{Clock, Metrics, Runner};
+use commonware_runtime::{Clock, Runner, Supervisor as _};
 use commonware_utils::{ordered::Map, NZUsize};
 use reth_chainspec::ChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
@@ -115,21 +115,51 @@ pub struct ConsensusArgs {
     )]
     pub mailbox_size: usize,
 
-    /// Activity timeout (views).
+    /// Views behind the finalized tip to retain for recent activity.
     #[arg(
-        long = "consensus.activity-timeout",
+        long = "consensus.view-retention",
         default_value = "10",
-        env = "ALLEGRO_ACTIVITY_TIMEOUT"
+        env = "ALLEGRO_VIEW_RETENTION"
     )]
-    pub activity_timeout: u64,
+    pub view_retention: u64,
 
-    /// Skip timeout (views).
+    /// Skip timeout (ms) — nullify a view whose leader is inactive while a
+    /// quorum is active. Must exceed the certification timeout.
     #[arg(
         long = "consensus.skip-timeout",
-        default_value = "5",
+        default_value = "5000",
         env = "ALLEGRO_SKIP_TIMEOUT"
     )]
-    pub skip_timeout: u64,
+    pub skip_timeout_ms: u64,
+
+    /// Consecutive views served by one leader. `1` rotates every view;
+    /// higher values enable stable leaders and are consensus-critical — every
+    /// validator must configure the same value.
+    #[arg(
+        long = "consensus.term-length",
+        default_value = "1",
+        env = "ALLEGRO_TERM_LENGTH"
+    )]
+    pub term_length: u32,
+
+    /// Stall timeout (ms) — abandon a term whose views notarize but never
+    /// finalize. Only read when `--consensus.term-length` exceeds 1, and must
+    /// exceed the certification timeout.
+    #[arg(
+        long = "consensus.stall-timeout",
+        default_value = "8000",
+        env = "ALLEGRO_STALL_TIMEOUT"
+    )]
+    pub stall_timeout_ms: u64,
+
+    /// Views a validator may run ahead of certified ancestry within a term.
+    /// `0` disables optimistic validation, as does a term length of 1.
+    #[arg(
+        long = "consensus.optimistic-views",
+        default_value = "0",
+        env = "ALLEGRO_OPTIMISTIC_VIEWS"
+    )]
+    pub optimistic_views: u64,
 
     /// P2P synchrony bound (ms).
     #[arg(
@@ -283,9 +313,12 @@ fn build_consensus_config(args: &ConsensusArgs) -> ConsensusConfig {
         certification_timeout: Duration::from_millis(args.cert_timeout_ms),
         timeout_retry: Duration::from_millis(args.timeout_retry_ms),
         fetch_timeout: Duration::from_millis(args.fetch_timeout_ms),
-        fetch_concurrent: 4,
-        activity_timeout: args.activity_timeout,
-        skip_timeout: args.skip_timeout,
+        view_retention: args.view_retention,
+        skip_timeout: Duration::from_millis(args.skip_timeout_ms),
+        term_length: args.term_length,
+        stall_timeout: Duration::from_millis(args.stall_timeout_ms),
+        optimistic_views: args.optimistic_views,
+        track_historical_votes: false,
         forwarding_policy: ForwardingPolicy::SilentVoters,
         replay_buffer_size: 8 * 1024 * 1024,
         write_buffer_size: 1024 * 1024,
@@ -297,13 +330,22 @@ fn build_consensus_config(args: &ConsensusArgs) -> ConsensusConfig {
 }
 
 /// Default P2P lookup config for a devnet node.
-fn dev_lookup_config(args: &ConsensusArgs, crypto: PrivateKey) -> lookup::Config<PrivateKey> {
+fn dev_lookup_config(
+    args: &ConsensusArgs,
+    crypto: PrivateKey,
+    validators: &ValidatorSet,
+) -> lookup::Config<PrivateKey> {
+    let my_pk = crypto.public_key();
     lookup::Config {
         namespace: commonware_utils::union_unique(b"allegro_p2p", b"_P2P"),
         crypto,
         listen: args.listen(),
         max_message_size: args.max_msg_size,
-        mailbox_size: args.mailbox_size,
+        max_peers_per_set: commonware_p2p::authenticated::peer_set_limit(
+            &validators.keys(),
+            &my_pk,
+        ),
+        mailbox_size: NZUsize!(args.mailbox_size),
         send_batch_size: NZUsize!(8),
         bypass_ip_check: false,
         allow_private_ips: true,
@@ -311,6 +353,7 @@ fn dev_lookup_config(args: &ConsensusArgs, crypto: PrivateKey) -> lookup::Config
         tracked_peer_sets: NZUsize!(3),
         synchrony_bound: Duration::from_millis(args.synchrony_ms),
         dial_frequency: Duration::from_millis(200),
+        dial_timeout: Duration::from_secs(10),
         max_handshake_age: Duration::from_secs(300),
         handshake_timeout: Duration::from_secs(5),
         max_concurrent_handshakes: std::num::NonZeroU32::new(128).expect("nz"),
@@ -347,7 +390,12 @@ async fn track_peers(
         .collect();
     if !pairs.is_empty() {
         match Map::try_from(pairs) {
-            Ok(m) => oracle.track(0, m).await,
+            Ok(m) => {
+                let feedback = oracle.track(0, m);
+                if !feedback.accepted() {
+                    warn!(?feedback, "peer tracking not accepted");
+                }
+            }
             Err(e) => warn!(%e, "skipping peer tracking: duplicate validator keys"),
         }
     }
@@ -373,9 +421,14 @@ fn spawn_consensus_thread(
     validators: ValidatorSet,
     reth: RethWiring,
 ) -> eyre::Result<()> {
+    // Fail here rather than on the consensus thread, where the runtime catches
+    // the panic and leaves the node running without consensus.
+    let consensus_config = build_consensus_config(&args);
+    consensus_config.validate()?;
+
     std::thread::Builder::new()
         .name("allegro-consensus".into())
-        .spawn(move || run_consensus(args, validators, reth))
+        .spawn(move || run_consensus(args, validators, reth, consensus_config))
         .map(|_| ())
         .map_err(|e| eyre::eyre!("failed to spawn consensus thread: {e}"))
 }
@@ -383,7 +436,12 @@ fn spawn_consensus_thread(
 /// Run the simplex engine on a commonware runtime (blocking): consensus p2p,
 /// the engine actor, payload building over reth's engine API, and block
 /// finalization.
-fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring) {
+fn run_consensus(
+    args: ConsensusArgs,
+    validators: ValidatorSet,
+    reth: RethWiring,
+    consensus_config: ConsensusConfig,
+) {
     let sk = PrivateKey::from_seed(args.node as u64);
     let pk = sk.public_key();
     let storage_dir = args
@@ -398,7 +456,6 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring
         "starting allegro consensus",
     );
 
-    let consensus_config = build_consensus_config(&args);
     let rt_cfg = commonware_runtime::tokio::Config::default()
         .with_tcp_nodelay(Some(true))
         .with_worker_threads(2)
@@ -409,15 +466,15 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring
     runner.start(|context| async move {
         // ── Consensus P2P ──
         let (mut network, mut oracle) = lookup::Network::new(
-            context.with_label("p2p"),
-            dev_lookup_config(&args, sk.clone()),
+            context.child("p2p"),
+            dev_lookup_config(&args, sk.clone(), &validators),
         );
         let q =
             |n| commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"));
-        let votes = network.register(0, q(128), args.mailbox_size);
-        let certs = network.register(1, q(128), args.mailbox_size);
-        let resolver = network.register(2, q(128), args.mailbox_size);
-        let blocks = network.register(3, q(128), args.mailbox_size);
+        let votes = network.register(0, q(128));
+        let certs = network.register(1, q(128));
+        let resolver = network.register(2, q(128));
+        let blocks = network.register(3, q(128));
 
         track_peers(&mut oracle, &pk, &validators).await;
         network.start();
@@ -435,7 +492,7 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring
 
         // ── Start simplex engine ──
         match start_simplex_engine(
-            context.with_label("engine"),
+            context.child("engine"),
             EngineConfig {
                 signing_key: sk,
                 validators,
@@ -456,7 +513,7 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring
         ) {
             Ok(started) => {
                 allegro_node::finalizer::spawn_finalizer(
-                    context.with_label("finalizer"),
+                    context.child("finalizer"),
                     finalized_rx,
                     started.block_info,
                     reth.engine_handle,

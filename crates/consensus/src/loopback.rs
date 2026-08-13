@@ -3,11 +3,12 @@
 //! Uses `tokio::sync::mpsc` under the hood. Works on the tokio runtime.
 
 use std::convert::Infallible;
-use std::sync::Arc;
 
+use commonware_actor::{Feedback, Unreliable};
 use commonware_cryptography::PublicKey as PublicKeyTrait;
 use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_runtime::{IoBuf, IoBufs};
+use tokio::sync::mpsc::error::TrySendError;
 
 /// Create a loopback channel pair for single-node testing.
 pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
@@ -15,15 +16,7 @@ pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
     capacity: usize,
 ) -> (LoopbackSender<P>, LoopbackReceiver<P>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-    (
-        LoopbackSender {
-            self_key,
-            tx: Arc::new(tokio::sync::Mutex::new(tx)),
-        },
-        LoopbackReceiver {
-            rx: Arc::new(tokio::sync::Mutex::new(rx)),
-        },
-    )
+    (LoopbackSender { self_key, tx }, LoopbackReceiver { rx })
 }
 
 // ── Sender ─────────────────────────────────────────────────
@@ -31,7 +24,7 @@ pub fn loopback_channel<P: PublicKeyTrait + Clone + Send + 'static>(
 #[derive(Debug)]
 pub struct LoopbackSender<P> {
     self_key: P,
-    tx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Sender<(P, IoBuf)>>>,
+    tx: tokio::sync::mpsc::Sender<(P, IoBuf)>,
 }
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> LimitedSender for LoopbackSender<P> {
@@ -41,7 +34,7 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> LimitedSender for LoopbackSende
     where
         Self: 'a;
 
-    async fn check(
+    fn check(
         &mut self,
         _recipients: Recipients<P>,
     ) -> Result<Self::Checked<'_>, std::time::SystemTime> {
@@ -65,24 +58,27 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> Clone for LoopbackSender<P> {
 
 #[derive(Debug)]
 pub struct LoopbackCheckedSender<P> {
-    tx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Sender<(P, IoBuf)>>>,
+    tx: tokio::sync::mpsc::Sender<(P, IoBuf)>,
     sent_to: P,
 }
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> CheckedSender for LoopbackCheckedSender<P> {
     type PublicKey = P;
-    type Error = Infallible;
 
-    async fn send(
-        self,
-        message: impl Into<IoBufs> + Send,
-        _priority: bool,
-    ) -> Result<Vec<P>, Self::Error> {
+    fn recipients(&self) -> Vec<P> {
+        vec![self.sent_to.clone()]
+    }
+
+    /// Submission is non-blocking: `send` is synchronous now, so a full
+    /// loopback buffer drops the message rather than applying backpressure.
+    fn send(self, message: impl Into<IoBufs> + Send, _priority: bool) -> Unreliable<Feedback> {
         let bufs: IoBufs = message.into();
         let msg = bufs.coalesce();
-        let tx = self.tx.lock().await;
-        let _ = tx.send((self.sent_to.clone(), msg)).await;
-        Ok(vec![self.sent_to])
+        match self.tx.try_send((self.sent_to, msg)) {
+            Ok(()) => Unreliable::new(Feedback::Ok),
+            Err(TrySendError::Full(_)) => Unreliable::rejected(),
+            Err(TrySendError::Closed(_)) => Unreliable::new(Feedback::Closed),
+        }
     }
 }
 
@@ -90,15 +86,7 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> CheckedSender for LoopbackCheck
 
 #[derive(Debug)]
 pub struct LoopbackReceiver<P> {
-    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<(P, IoBuf)>>>,
-}
-
-impl<P> Clone for LoopbackReceiver<P> {
-    fn clone(&self) -> Self {
-        Self {
-            rx: self.rx.clone(),
-        }
-    }
+    rx: tokio::sync::mpsc::Receiver<(P, IoBuf)>,
 }
 
 impl<P: PublicKeyTrait + Clone + Send + 'static> Receiver for LoopbackReceiver<P> {
@@ -106,7 +94,6 @@ impl<P: PublicKeyTrait + Clone + Send + 'static> Receiver for LoopbackReceiver<P
     type Error = Infallible;
 
     async fn recv(&mut self) -> Result<(P, IoBuf), Self::Error> {
-        let mut rx = self.rx.lock().await;
-        Ok(rx.recv().await.expect("channel should not close"))
+        Ok(self.rx.recv().await.expect("channel should not close"))
     }
 }
