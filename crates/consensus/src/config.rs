@@ -3,6 +3,7 @@
 //! Follows Tempo's approach: all consensus parameters have sensible defaults,
 //! are configurable via CLI args, and are validated at startup.
 
+use crate::error::ConsensusError;
 use std::time::Duration;
 
 /// Consensus engine configuration.
@@ -93,6 +94,63 @@ pub enum ForwardingPolicy {
     SilentVoters,
     /// Forward to all validators (maps to SilentVoters on commonware).
     All,
+}
+
+impl ConsensusConfig {
+    /// Check the invariants the simplex engine relies on.
+    ///
+    /// Commonware asserts these itself, but only inside `Engine::new`, which
+    /// runs on the consensus thread under a panic-catching runtime — a bad
+    /// value there takes down consensus while the node keeps running. Checking
+    /// here turns that into a startup error on the main thread.
+    pub fn validate(&self) -> Result<(), ConsensusError> {
+        let bad = |msg: String| Err(ConsensusError::Config(msg));
+
+        if self.mailbox_size == 0 {
+            return bad("mailbox size must be greater than zero".into());
+        }
+        if self.leader_timeout.is_zero() {
+            return bad("leader timeout must be greater than zero".into());
+        }
+        if self.timeout_retry.is_zero() {
+            return bad("timeout retry must be greater than zero".into());
+        }
+        if self.fetch_timeout.is_zero() {
+            return bad("fetch timeout must be greater than zero".into());
+        }
+        if self.view_retention == 0 {
+            return bad("view retention must be greater than zero".into());
+        }
+        if self.term_length == 0 {
+            return bad("term length must be at least 1".into());
+        }
+        if self.certification_timeout <= self.leader_timeout {
+            return bad(format!(
+                "certification timeout ({:?}) must exceed leader timeout ({:?})",
+                self.certification_timeout, self.leader_timeout,
+            ));
+        }
+        if self.skip_timeout <= self.certification_timeout {
+            return bad(format!(
+                "skip timeout ({:?}) must exceed certification timeout ({:?})",
+                self.skip_timeout, self.certification_timeout,
+            ));
+        }
+        if self.skip_timeout <= self.timeout_retry {
+            return bad(format!(
+                "skip timeout ({:?}) must exceed timeout retry ({:?})",
+                self.skip_timeout, self.timeout_retry,
+            ));
+        }
+        // Only read when the elector hands out multi-view terms.
+        if self.term_length > 1 && self.stall_timeout <= self.certification_timeout {
+            return bad(format!(
+                "stall timeout ({:?}) must exceed certification timeout ({:?})",
+                self.stall_timeout, self.certification_timeout,
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for ConsensusConfig {
@@ -195,6 +253,79 @@ impl Default for NetworkConfig {
             allow_private_ips: true,
             allow_dns: false,
             send_batch_size: 8,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_valid() {
+        assert!(ConsensusConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_ordering_violations() {
+        // A stale `ALLEGRO_SKIP_TIMEOUT=5` from when the option counted views
+        // now parses as 5ms, well under the certification timeout.
+        let cfg = ConsensusConfig {
+            skip_timeout: Duration::from_millis(5),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = ConsensusConfig {
+            certification_timeout: Duration::from_secs(2),
+            leader_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = ConsensusConfig {
+            timeout_retry: Duration::from_secs(9),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn stall_timeout_only_checked_for_multi_view_terms() {
+        let short_stall = ConsensusConfig {
+            stall_timeout: Duration::from_millis(1),
+            ..Default::default()
+        };
+        assert!(short_stall.validate().is_ok(), "unused at term_length 1");
+
+        let cfg = ConsensusConfig {
+            term_length: 4,
+            ..short_stall
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_values() {
+        for cfg in [
+            ConsensusConfig {
+                mailbox_size: 0,
+                ..Default::default()
+            },
+            ConsensusConfig {
+                view_retention: 0,
+                ..Default::default()
+            },
+            ConsensusConfig {
+                fetch_timeout: Duration::ZERO,
+                ..Default::default()
+            },
+            ConsensusConfig {
+                term_length: 0,
+                ..Default::default()
+            },
+        ] {
+            assert!(cfg.validate().is_err());
         }
     }
 }

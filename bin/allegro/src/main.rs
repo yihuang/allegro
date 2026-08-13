@@ -410,9 +410,14 @@ fn spawn_consensus_thread(
     validators: ValidatorSet,
     reth: RethWiring,
 ) -> eyre::Result<()> {
+    // Fail here rather than on the consensus thread, where the runtime catches
+    // the panic and leaves the node running without consensus.
+    let consensus_config = build_consensus_config(&args);
+    consensus_config.validate()?;
+
     std::thread::Builder::new()
         .name("allegro-consensus".into())
-        .spawn(move || run_consensus(args, validators, reth))
+        .spawn(move || run_consensus(args, validators, reth, consensus_config))
         .map(|_| ())
         .map_err(|e| eyre::eyre!("failed to spawn consensus thread: {e}"))
 }
@@ -420,7 +425,12 @@ fn spawn_consensus_thread(
 /// Run the simplex engine on a commonware runtime (blocking): consensus p2p,
 /// the engine actor, payload building over reth's engine API, and block
 /// finalization.
-fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring) {
+fn run_consensus(
+    args: ConsensusArgs,
+    validators: ValidatorSet,
+    reth: RethWiring,
+    consensus_config: ConsensusConfig,
+) {
     let sk = PrivateKey::from_seed(args.node as u64);
     let pk = sk.public_key();
     let storage_dir = args
@@ -435,7 +445,6 @@ fn run_consensus(args: ConsensusArgs, validators: ValidatorSet, reth: RethWiring
         "starting allegro consensus",
     );
 
-    let consensus_config = build_consensus_config(&args);
     let rt_cfg = commonware_runtime::tokio::Config::default()
         .with_tcp_nodelay(Some(true))
         .with_worker_threads(2)
