@@ -28,7 +28,7 @@ use commonware_consensus::{
     types::{Epoch, Round, View},
     Automaton,
 };
-use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
+use commonware_cryptography::{ed25519::PrivateKey, Digest as _, Signer as _};
 use commonware_runtime::{deterministic, Clock, Runner, Supervisor};
 use tokio::sync::oneshot;
 
@@ -94,7 +94,8 @@ async fn test_consensus_block_production() {
     let validators = ValidatorSet::from_entries(&entries);
     let (mut mailbox, _shutdown, _received) = spawn_actor(validators.clone());
 
-    let genesis = Digest(B256::ZERO);
+    let genesis = Digest::EMPTY;
+    assert_eq!(genesis, Digest(B256::ZERO));
 
     let ctx1 = Context {
         round: Round::new(Epoch::new(0), View::new(1)),
@@ -147,7 +148,7 @@ async fn test_verify_rejects_inconsistent_timestamp_millis() {
     let validators = ValidatorSet::from_entries(&entries);
     let (mut mailbox, _shutdown, received) = spawn_actor(validators.clone());
 
-    let genesis = Digest(B256::ZERO);
+    let genesis = Digest::EMPTY;
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()

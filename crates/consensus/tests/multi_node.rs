@@ -338,6 +338,47 @@ fn test_proposals_are_unique_per_validator() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  MN6: Pipelined simplex (stable leaders + optimistic validation)
+// ═══════════════════════════════════════════════════════════════
+
+/// Stable-leader terms with optimistic validation (the pipelined simplex
+/// variant) produce blocks end-to-end.
+#[test]
+fn test_pipelined_stable_leader_produces_blocks() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::filter::EnvFilter::new("allegro=warn"))
+        .try_init();
+
+    let n = 3;
+    let cfg = ConsensusConfig {
+        term_length: 8,
+        stall_timeout: Duration::from_secs(60),
+        optimistic_views: 8,
+        leader_timeout: Duration::from_millis(500),
+        certification_timeout: Duration::from_millis(1000),
+        timeout_retry: Duration::from_millis(200),
+        fetch_timeout: Duration::from_millis(1000),
+        ..ConsensusConfig::default()
+    };
+
+    deterministic::Runner::default().start(|context| async move {
+        let (keys, validator_set) = build_validators(n);
+        let logs = start_engines(&context, &keys, &validator_set, &cfg).await;
+        advance_time(
+            &context,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+        )
+        .await;
+
+        let total: usize = logs.iter().map(|l| l.lock().unwrap().len()).sum();
+        eprintln!("pipelined: total proposals = {total}");
+
+        assert!(total >= n, "expected >= {n} proposals, got {total}");
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  MN5: Metrics track proposals correctly
 // ═══════════════════════════════════════════════════════════════
 

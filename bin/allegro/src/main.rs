@@ -330,18 +330,26 @@ fn build_consensus_config(args: &ConsensusArgs) -> ConsensusConfig {
 }
 
 /// Default P2P lookup config for a devnet node.
-fn dev_lookup_config(args: &ConsensusArgs, crypto: PrivateKey) -> lookup::Config<PrivateKey> {
+fn dev_lookup_config(
+    args: &ConsensusArgs,
+    crypto: PrivateKey,
+    validators: &ValidatorSet,
+) -> lookup::Config<PrivateKey> {
+    let my_pk = crypto.public_key();
     lookup::Config {
         namespace: commonware_utils::union_unique(b"allegro_p2p", b"_P2P"),
         crypto,
         listen: args.listen(),
         max_message_size: args.max_msg_size,
+        max_peers_per_set: commonware_p2p::authenticated::peer_set_limit(
+            &validators.keys(),
+            &my_pk,
+        ),
         mailbox_size: NZUsize!(args.mailbox_size),
         send_batch_size: NZUsize!(8),
         bypass_ip_check: false,
         allow_private_ips: true,
         allow_dns: false,
-        max_peers_per_set: NZUsize!(64),
         tracked_peer_sets: NZUsize!(3),
         synchrony_bound: Duration::from_millis(args.synchrony_ms),
         dial_frequency: Duration::from_millis(200),
@@ -383,7 +391,10 @@ async fn track_peers(
     if !pairs.is_empty() {
         match Map::try_from(pairs) {
             Ok(m) => {
-                oracle.track(0, m);
+                let feedback = oracle.track(0, m);
+                if !feedback.accepted() {
+                    warn!(?feedback, "peer tracking not accepted");
+                }
             }
             Err(e) => warn!(%e, "skipping peer tracking: duplicate validator keys"),
         }
@@ -454,8 +465,10 @@ fn run_consensus(
 
     runner.start(|context| async move {
         // ── Consensus P2P ──
-        let (mut network, mut oracle) =
-            lookup::Network::new(context.child("p2p"), dev_lookup_config(&args, sk.clone()));
+        let (mut network, mut oracle) = lookup::Network::new(
+            context.child("p2p"),
+            dev_lookup_config(&args, sk.clone(), &validators),
+        );
         let q =
             |n| commonware_runtime::Quota::per_second(std::num::NonZeroU32::new(n).expect("nz"));
         let votes = network.register(0, q(128));
