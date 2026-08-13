@@ -372,7 +372,7 @@ fn test_pipelined_stable_leader_produces_blocks() {
         .await;
 
         let total: usize = logs.iter().map(|l| l.lock().unwrap().len()).sum();
-        eprintln!("pipelined: total proposals = {total}");
+        debug!("pipelined: total proposals = {total}");
 
         assert!(total >= n, "expected >= {n} proposals, got {total}");
     });
