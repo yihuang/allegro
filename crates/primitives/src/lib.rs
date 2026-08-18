@@ -6,7 +6,7 @@ mod digest;
 mod header;
 
 pub use digest::Digest;
-pub use header::{AllegroConsensusContext, AllegroHeader, ProposerKey};
+pub use header::{AllegroConsensusContext, AllegroHeader, InvalidProposerKey, ProposerKey};
 
 use alloy_consensus::Sealable;
 use alloy_primitives::B256;

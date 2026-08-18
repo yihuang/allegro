@@ -123,7 +123,7 @@ fn build_block(
             view,
             parent_view,
             proposer: ProposerKey::try_from(proposer)
-                .expect("payload request carries a validator's public key"),
+                .map_err(|_| "invalid proposer public key".to_string())?,
         }),
     };
     let block_hash = header.hash_slow();
