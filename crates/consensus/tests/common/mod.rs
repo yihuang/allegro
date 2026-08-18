@@ -76,7 +76,8 @@ pub fn build_empty_block(request: &BuildPayloadRequest) -> Result<BuiltPayload, 
             epoch: request.epoch,
             view: request.view,
             parent_view: request.parent_view,
-            proposer: ProposerKey(request.proposer),
+            proposer: ProposerKey::try_from(request.proposer)
+                .map_err(|_| "invalid proposer public key".to_string())?,
         }),
     };
     let block_hash = header.hash_slow();

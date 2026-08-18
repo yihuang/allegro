@@ -122,7 +122,8 @@ fn build_block(
             epoch,
             view,
             parent_view,
-            proposer: ProposerKey(proposer),
+            proposer: ProposerKey::try_from(proposer)
+                .map_err(|_| "invalid proposer public key".to_string())?,
         }),
     };
     let block_hash = header.hash_slow();
