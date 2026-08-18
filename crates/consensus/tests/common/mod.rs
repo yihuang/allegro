@@ -76,7 +76,8 @@ pub fn build_empty_block(request: &BuildPayloadRequest) -> Result<BuiltPayload, 
             epoch: request.epoch,
             view: request.view,
             parent_view: request.parent_view,
-            proposer: ProposerKey(request.proposer),
+            proposer: ProposerKey::try_from(request.proposer)
+                .expect("payload request carries a validator's public key"),
         }),
     };
     let block_hash = header.hash_slow();

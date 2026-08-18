@@ -5,23 +5,25 @@ use alloy_primitives::{keccak256, Address, BlockNumber, Bloom, Bytes, B256, B64,
 use alloy_rlp::{Decodable, Encodable, Header as RlpHeader, RlpDecodable, RlpEncodable};
 use bytes::BufMut;
 
-/// A raw Ed25519 public key (32 bytes) stored in the block header.
+/// The bytes are not a valid Ed25519 public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidProposerKey;
+
+impl core::fmt::Display for InvalidProposerKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("invalid ed25519 proposer key")
+    }
+}
+
+impl core::error::Error for InvalidProposerKey {}
+
+/// A validated Ed25519 public key (32 bytes) stored in the block header.
 ///
 /// This is a wire-format type for RLP encoding. Convert to/from
 /// [`commonware_cryptography::ed25519::PublicKey`] when interacting
 /// with the consensus layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProposerKey(pub [u8; 32]);
-
-impl ProposerKey {
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
+pub struct ProposerKey([u8; 32]);
 
 impl Encodable for ProposerKey {
     fn encode(&self, out: &mut dyn BufMut) {
@@ -34,14 +36,25 @@ impl Encodable for ProposerKey {
 
 impl Decodable for ProposerKey {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let arr: [u8; 32] = Decodable::decode(buf)?;
-        Ok(Self(arr))
+        let bytes: [u8; 32] = Decodable::decode(buf)?;
+        Self::try_from(bytes)
+            .map_err(|_| alloy_rlp::Error::Custom("malformed ed25519 proposer key"))
     }
 }
 
-impl From<[u8; 32]> for ProposerKey {
-    fn from(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+impl TryFrom<[u8; 32]> for ProposerKey {
+    type Error = InvalidProposerKey;
+
+    fn try_from(bytes: [u8; 32]) -> Result<Self, Self::Error> {
+        commonware_cryptography::ed25519::PublicKey::try_from(bytes)
+            .map_err(|_| InvalidProposerKey)?;
+        Ok(Self(bytes))
+    }
+}
+
+impl From<&commonware_cryptography::ed25519::PublicKey> for ProposerKey {
+    fn from(key: &commonware_cryptography::ed25519::PublicKey) -> Self {
+        Self(<[u8; 32]>::from(key))
     }
 }
 
@@ -57,12 +70,9 @@ pub struct AllegroConsensusContext {
 
 impl AllegroConsensusContext {
     /// Convert the proposer key to a Commonware `ed25519::PublicKey`.
-    /// Panics if the raw bytes are not a valid Ed25519 point (should never
-    /// happen for keys that were originally created from a valid public key).
     pub fn proposer_commonware(&self) -> commonware_cryptography::ed25519::PublicKey {
-        use commonware_codec::DecodeExt as _;
-        commonware_cryptography::ed25519::PublicKey::decode(self.proposer.0.as_slice())
-            .expect("ProposerKey bytes should be a valid Ed25519 point")
+        commonware_cryptography::ed25519::PublicKey::try_from(self.proposer.0)
+            .expect("ProposerKey was validated on construction")
     }
 
     /// Build from a Commonware `ed25519::PublicKey`.
@@ -72,13 +82,11 @@ impl AllegroConsensusContext {
         parent_view: u64,
         proposer: &commonware_cryptography::ed25519::PublicKey,
     ) -> Self {
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(proposer.as_ref());
         Self {
             epoch,
             view,
             parent_view,
-            proposer: ProposerKey(bytes),
+            proposer: ProposerKey::from(proposer),
         }
     }
 }
@@ -283,6 +291,11 @@ impl From<Header> for AllegroHeader {
 mod tests {
     use super::*;
     use alloy_rlp::Decodable;
+    use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
+
+    fn key(seed: u64) -> commonware_cryptography::ed25519::PublicKey {
+        PrivateKey::from_seed(seed).public_key()
+    }
 
     #[test]
     fn header_rlp_roundtrip_with_context() {
@@ -297,12 +310,33 @@ mod tests {
                 epoch: 1,
                 view: 5,
                 parent_view: 4,
-                proposer: ProposerKey([0xab; 32]),
+                proposer: ProposerKey::from(&key(7)),
             }),
         };
         let encoded = alloy_rlp::encode(&header);
         let decoded = AllegroHeader::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(header, decoded);
+    }
+
+    #[test]
+    fn proposer_key_rejects_non_point() {
+        // Not every 32-byte string is refused — many do decode to some point —
+        // so this is a value commonware actually rejects.
+        const NOT_A_POINT: [u8; 32] = [0xab; 32];
+
+        assert_eq!(ProposerKey::try_from(NOT_A_POINT), Err(InvalidProposerKey));
+
+        // The RLP path a peer-supplied header goes through must also refuse it
+        // rather than arm a panic in `proposer_commonware`.
+        let encoded = alloy_rlp::encode(&NOT_A_POINT[..]);
+        assert!(ProposerKey::decode(&mut encoded.as_slice()).is_err());
+    }
+
+    #[test]
+    fn proposer_key_roundtrips_through_commonware() {
+        let key = key(11);
+        let ctx = AllegroConsensusContext::from_commonware_proposer(1, 7, 6, &key);
+        assert_eq!(ctx.proposer_commonware(), key);
     }
 
     #[test]

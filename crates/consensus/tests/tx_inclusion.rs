@@ -122,7 +122,8 @@ fn build_block(
             epoch,
             view,
             parent_view,
-            proposer: ProposerKey(proposer),
+            proposer: ProposerKey::try_from(proposer)
+                .expect("payload request carries a validator's public key"),
         }),
     };
     let block_hash = header.hash_slow();
