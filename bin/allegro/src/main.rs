@@ -22,6 +22,7 @@ use allegro_consensus::{
     start_simplex_engine, ConsensusMetrics, EngineConfig, ValidatorEntry, ValidatorSet,
 };
 use alloy_primitives::B256;
+use clap::builder::{PossibleValuesParser, TypedValueParser as _};
 use clap::{Args, Parser};
 use commonware_cryptography::{ed25519::PrivateKey, Signer as _};
 use commonware_p2p::authenticated::lookup;
@@ -160,6 +161,19 @@ pub struct ConsensusArgs {
         env = "ALLEGRO_OPTIMISTIC_VIEWS"
     )]
     pub optimistic_views: u64,
+
+    /// Re-broadcast a certified proposal on entering the next view, to the
+    /// peers whose matching vote was not observed. Only turn this off if
+    /// block delivery is reliable: a validator that misses a block votes
+    /// against the proposal rather than fetching it.
+    #[arg(
+        long = "consensus.forwarding-policy",
+        default_value = "silent-voters",
+        value_parser = PossibleValuesParser::new(["disabled", "silent-voters", "silent-leader"])
+            .map(forwarding_policy),
+        env = "ALLEGRO_FORWARDING_POLICY"
+    )]
+    pub forwarding_policy: ForwardingPolicy,
 
     /// P2P synchrony bound (ms).
     #[arg(
@@ -306,6 +320,16 @@ fn build_validator_set(args: &ConsensusArgs, genesis_validators: ValidatorSet) -
     vs
 }
 
+/// Maps a policy name already vetted by the flag's `PossibleValuesParser`.
+fn forwarding_policy(name: String) -> ForwardingPolicy {
+    match name.as_str() {
+        "disabled" => ForwardingPolicy::Disabled,
+        "silent-voters" => ForwardingPolicy::SilentVoters,
+        "silent-leader" => ForwardingPolicy::SilentLeader,
+        other => unreachable!("clap accepted an unmapped policy: {other}"),
+    }
+}
+
 fn build_consensus_config(args: &ConsensusArgs) -> ConsensusConfig {
     ConsensusConfig {
         mailbox_size: args.mailbox_size,
@@ -319,7 +343,7 @@ fn build_consensus_config(args: &ConsensusArgs) -> ConsensusConfig {
         stall_timeout: Duration::from_millis(args.stall_timeout_ms),
         optimistic_views: args.optimistic_views,
         track_historical_votes: false,
-        forwarding_policy: ForwardingPolicy::SilentVoters,
+        forwarding_policy: args.forwarding_policy,
         replay_buffer_size: 8 * 1024 * 1024,
         write_buffer_size: 1024 * 1024,
         page_cache_pages: 4096,

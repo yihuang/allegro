@@ -17,10 +17,7 @@ use alloy_primitives::B256;
 use bytes::Buf;
 use commonware_actor::Feedback;
 use commonware_consensus::{
-    simplex::{
-        elector::RoundRobin, scheme::ed25519, types::Activity, Engine, Floor, ForwardingPolicy,
-        Plan,
-    },
+    simplex::{elector::RoundRobin, scheme::ed25519, types::Activity, Engine, Floor, Plan},
     types::{Epoch, TermLength, ViewDelta},
     Relay, Reporter,
 };
@@ -458,12 +455,6 @@ where
         NZUsize!(cc.page_cache_capacity),
     );
 
-    // Map our forwarding policy to commonware's
-    let forwarding = match cc.forwarding_policy {
-        crate::config::ForwardingPolicy::SilentVoters => ForwardingPolicy::SilentVoters,
-        crate::config::ForwardingPolicy::All => ForwardingPolicy::SilentVoters,
-    };
-
     // Build the simplex engine
     let engine = Engine::new(
         context.child("simplex"),
@@ -491,7 +482,7 @@ where
             view_retention: ViewDelta::new(cc.view_retention),
             skip_timeout: cc.skip_timeout,
             fetch_timeout: cc.fetch_timeout,
-            forwarding,
+            forwarding: cc.forwarding_policy,
             replay_buffer: NZUsize!(cc.replay_buffer_size),
             write_buffer: NZUsize!(cc.write_buffer_size),
             page_cache,

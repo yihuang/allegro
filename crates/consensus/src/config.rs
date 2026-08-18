@@ -6,6 +6,8 @@
 use crate::error::ConsensusError;
 use std::time::Duration;
 
+pub use commonware_consensus::simplex::ForwardingPolicy;
+
 /// Consensus engine configuration.
 #[derive(Debug, Clone)]
 pub struct ConsensusConfig {
@@ -64,7 +66,10 @@ pub struct ConsensusConfig {
     /// reporting and peer blocking reliable at the cost of memory.
     pub track_historical_votes: bool,
 
-    /// Forwarding policy for block proposals.
+    /// Re-broadcast a certified proposal on entering the next view, to the
+    /// peers whose matching vote was not observed. Keep it on: block delivery
+    /// is best-effort, and a validator that misses a block votes against the
+    /// proposal rather than fetching it.
     pub forwarding_policy: ForwardingPolicy,
 
     /// Replay buffer size for consensus messages (bytes).
@@ -84,16 +89,6 @@ pub struct ConsensusConfig {
 
     /// Whether to enable strict startup (require finalization archive).
     pub strict_startup: bool,
-}
-
-/// How the engine forwards block proposals to validators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ForwardingPolicy {
-    /// Only forward to silent voters who haven't acknowledged the proposal.
-    #[default]
-    SilentVoters,
-    /// Forward to all validators (maps to SilentVoters on commonware).
-    All,
 }
 
 impl ConsensusConfig {
